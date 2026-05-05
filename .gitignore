@@ -1,0 +1,7 @@
+people_data.json
+runs/
+
+__pycache__/
+.DS_Store
+
+.env

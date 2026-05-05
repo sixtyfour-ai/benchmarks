@@ -1,0 +1,23 @@
+[
+  {
+    "person_info": "Saarth Shah Sixtyfour",
+    "name": "Saarth Shah",
+    "fields": [
+      {
+        "fieldname": "prev_startup_first_customer",
+        "description": "First client of his startup directly before Sixtyfour",
+        "answer": "Walnut Creek Dental"
+      },
+      {
+        "fieldname": "isc_exam_score_and_ranking",
+        "description": "ISC board exam percentage and approximate ranking among high scorers",
+        "answer": "95.0%, ranked 9th among La Martiniere ISC high scorers (2019)"
+      },
+      {
+        "fieldname": "early_twitter_handle",
+        "description": "Early Twitter handle used during high school",
+        "answer": "herossgraphics"
+      }
+    ]
+  }
+]
