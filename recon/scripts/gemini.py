@@ -95,7 +95,7 @@ async def main():
         async with sem:
             t0 = time.time()
             try:
-                async with httpx.AsyncClient(timeout=900.0) as client:
+                async with httpx.AsyncClient(timeout=3600.0) as client:
                     response = await call_api(client, item, args.model, args.thinking)
                 await runner.record(item, extract_output(response), time.time() - t0, extract_metadata(response))
             except Exception as e:

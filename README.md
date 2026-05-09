@@ -11,7 +11,7 @@ Open benchmarks for evaluating people and company research capabilities.
 ```bash
 git clone https://github.com/sixtyfour-ai/benchmarks.git
 cd benchmarks/recon
-pip install httpx openai
+pip install httpx openai python-dotenv
 ```
 
 ### Running a provider

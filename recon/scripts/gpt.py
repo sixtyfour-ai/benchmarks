@@ -74,7 +74,7 @@ def extract_output(response: dict) -> dict:
 def extract_metadata(response: dict) -> dict:
     usage = response.get("usage", {})
     output_details = usage.get("output_tokens_details", {})
-    web_searches = sum(1 for item in response.get("output", []) if item.get("type") == "web_search")
+    web_searches = sum(1 for item in response.get("output", []) if "web_search" in item.get("type", ""))
     return {
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),

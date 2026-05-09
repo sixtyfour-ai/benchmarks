@@ -86,7 +86,7 @@ async def main():
         async with sem:
             t0 = time.time()
             try:
-                async with httpx.AsyncClient(timeout=600.0) as client:
+                async with httpx.AsyncClient(timeout=3600.0) as client:
                     response = await call_api(client, item, args.type)
                 output = extract_output(response)
                 metadata = extract_metadata(response)

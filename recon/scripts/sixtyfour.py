@@ -71,7 +71,7 @@ def _parse_lead_info(person_info: str) -> dict:
     return info
 
 
-async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 900) -> dict:
+async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 3600) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         await asyncio.sleep(10)

@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 RESULTS_DIR = Path(__file__).parent.parent / "results"
+RUNS_DIR = RESULTS_DIR / "runs"
 
 JUDGE_PROMPT = """You are an eval judge comparing enrichment results against verified ground truth.
 For each field, decide: CORRECT or WRONG. No partial credit.
@@ -36,8 +37,8 @@ Return JSON: {field_name: {"match": "correct"|"wrong", "reason": "brief explanat
 Only JSON, no markdown."""
 
 
-def load_leads(n: int | None = None) -> list[dict]:
-    data = json.loads((DATA_DIR / "leads.json").read_text())
+def load_people(n: int | None = None) -> list[dict]:
+    data = json.loads((DATA_DIR / "people_data.json").read_text())
     return data[:n] if n else data
 
 
@@ -113,12 +114,12 @@ class EvalRunner:
     def __init__(self, name: str, config: dict):
         self.name = name
         self.config = config
-        self.oai = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        self.oai = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=3600.0)
         self.judge_sem = asyncio.Semaphore(20)
         self.results: list[dict] = []
         self.t_start = time.time()
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        self.out_path = RESULTS_DIR / f"{name}_{datetime.now():%Y%m%d_%H%M}_judged.json"
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        self.out_path = RUNS_DIR / f"{name}_{datetime.now():%Y%m%d_%H%M}_judged.json"
 
     async def record(self, item: dict, output: dict, elapsed: float, metadata: dict | None = None) -> dict:
         verdicts = await judge_fields(self.oai, self.judge_sem, item["person_info"], output, item["fields"])

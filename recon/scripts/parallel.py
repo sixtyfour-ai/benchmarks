@@ -190,7 +190,7 @@ async def main():
             person = item["person_info"]
             if person in ckpt["submitted"] and person not in ckpt["completed"]:
                 run_id = ckpt["submitted"][person]["run_id"]
-                t0 = ckpt["submitted"][person].get("submitted_at", t_start)
+                t0 = float(ckpt["submitted"][person].get("submitted_at", t_start))
                 print(f"  Resuming poll: {person[:30]}", flush=True)
             else:
                 run_id = await submit_one(client, item, args.processor)
