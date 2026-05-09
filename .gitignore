@@ -2,6 +2,7 @@ people_data.json
 runs/
 
 __pycache__/
+.claude/
 .DS_Store
 
 .env
