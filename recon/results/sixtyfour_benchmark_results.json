@@ -20,7 +20,7 @@
       "accuracy": 71.8,
       "precision": 82.6,
       "latency_p50_seconds": 459,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Sixtyfour",
@@ -33,7 +33,7 @@
       "accuracy": 58.8,
       "precision": 81.4,
       "latency_p50_seconds": 223,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Parallel",
@@ -46,7 +46,7 @@
       "accuracy": 44.6,
       "precision": 77.1,
       "latency_p50_seconds": 678,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Sixtyfour",
@@ -59,7 +59,7 @@
       "accuracy": 42.4,
       "precision": 76.5,
       "latency_p50_seconds": 230,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Parallel",
@@ -72,7 +72,7 @@
       "accuracy": 42.6,
       "precision": 75.5,
       "latency_p50_seconds": 834,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Parallel",
@@ -85,7 +85,7 @@
       "accuracy": 44.4,
       "precision": 68.5,
       "latency_p50_seconds": 589,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "OpenAI",
@@ -98,7 +98,7 @@
       "accuracy": 29.4,
       "precision": 82.5,
       "latency_p50_seconds": 180,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Google",
@@ -111,7 +111,7 @@
       "accuracy": 26.9,
       "precision": 72.3,
       "latency_p50_seconds": 87,
-      "sample_people": 139
+      "people_evaluated": 139
     },
     {
       "provider": "xAI",
@@ -124,7 +124,7 @@
       "accuracy": 24.5,
       "precision": 63.0,
       "latency_p50_seconds": 15,
-      "sample_people": 140
+      "people_evaluated": 140
     },
     {
       "provider": "Exa",
@@ -137,7 +137,7 @@
       "accuracy": 12.7,
       "precision": 41.3,
       "latency_p50_seconds": 4,
-      "sample_people": 139
+      "people_evaluated": 139
     },
     {
       "provider": "Exa",
@@ -150,7 +150,7 @@
       "accuracy": 19.7,
       "precision": 39.6,
       "latency_p50_seconds": 13,
-      "sample_people": 139
+      "people_evaluated": 139
     }
   ]
 }
