@@ -16,7 +16,7 @@ import os
 import time
 
 import httpx
-from judge import load_people, EvalRunner
+from judge import load_people, EvalRunner, post_with_retry
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
@@ -34,7 +34,8 @@ def build_schema(fields: list[dict]) -> dict:
 
 async def call_api(client: httpx.AsyncClient, item: dict, model: str, reasoning: str) -> dict:
     fields_desc = "\n".join(f"- {f['fieldname']}: {f['description']}" for f in item["fields"])
-    resp = await client.post(
+    resp = await post_with_retry(
+        client,
         OPENAI_ENDPOINT,
         json={
             "model": model,
@@ -55,7 +56,6 @@ async def call_api(client: httpx.AsyncClient, item: dict, model: str, reasoning:
         },
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
     )
-    resp.raise_for_status()
     return resp.json()
 
 

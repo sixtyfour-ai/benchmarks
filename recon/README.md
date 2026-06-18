@@ -2,22 +2,23 @@
 
 **RE**search & **CON**firmation — evaluating AI systems on verified people research.
 
-100 real people, 474 verified fields, binary judging (correct / wrong / missing).
+140 real people, 514 verified fields, binary judging (correct / wrong / missing).
 
 ## Results
 
 | Provider | Configuration | Accuracy | Weighted Accuracy | Precision | Latency P50 |
 |----------|--------------|----------|-------------------|-----------|-------------|
-| Sixtyfour | High | 83.5% | 73.0% | 88.8% | 328s |
-| Sixtyfour | Medium | 67.9% | 61.0% | 90.7% | 310s |
-| Parallel | Ultra 8x | 70.5% | 60.6% | 87.7% | 990s |
-| Parallel | Ultra 2x | 64.1% | 56.8% | 89.8% | 559s |
-| Sixtyfour | Low | 51.7% | 45.1% | 88.8% | 78s |
-| xAI | Grok 4.20 Multi-Agent | 56.1% | 42.2% | 80.1% | 194s |
-| Parallel | Ultra | 46.0% | 39.8% | 88.1% | 540s |
-| OpenAI | GPT-5.4 xhigh | 36.8% | 32.9% | 90.5% | 224s |
-| Google | Gemini 3.1 Pro | 32.6% | 22.8% | 76.9% | 82s |
-| Exa | Search Deep Reasoning | 22.7% | 15.3% | 75.6% | 31s |
+| Sixtyfour | High | 71.8% | +56.6% | 82.6% | 459s |
+| Sixtyfour | Medium | 58.8% | +45.3% | 81.4% | 223s |
+| Parallel | Ultra 8x | 44.6% | +31.3% | 77.1% | 678s |
+| Sixtyfour | Low | 42.4% | +29.4% | 76.5% | 230s |
+| Parallel | Ultra 2x | 42.6% | +28.8% | 75.5% | 834s |
+| Parallel | Ultra | 44.4% | +23.9% | 68.5% | 589s |
+| OpenAI | GPT-5.4 xhigh | 29.4% | +23.2% | 82.5% | 180s |
+| Google | Gemini 3.1 Pro | 26.9% | +16.6% | 72.3% | 87s |
+| xAI | Grok 4.3 | 24.5% | +10.1% | 63.0% | 15s |
+| Exa | Search Deep | 12.7% | −5.4% | 41.3% | 4s |
+| Exa | Search Deep Reasoning | 19.7% | −10.4% | 39.6% | 13s |
 
 **Weighted accuracy** = (correct − wrong) / total_fields. Penalizes hallucination.
 
@@ -32,7 +33,7 @@ pip install httpx openai python-dotenv
 
 ### 2. Dataset
 
-Place `people_data.json` in `data/`. This file contains 100 people with 474 verified fields. It is not included in the repo — request access from Sixtyfour or download from the provided S3 presigned URL.
+Place `people_data.json` in `data/`. This file contains 140 people with 514 verified fields. It is not included in the repo — request access from Sixtyfour or download from the provided S3 presigned URL.
 
 ### 3. API keys
 
@@ -54,7 +55,7 @@ Get a Sixtyfour API key at [app.sixtyfour.ai/keys](https://app.sixtyfour.ai/keys
 
 ### 4. Run a provider
 
-Each script runs all 100 people by default. Use `--people N` for a smaller test.
+Each script runs all 140 people by default. Use `--people N` for a smaller test.
 
 ```bash
 # Sixtyfour (default: low tier)
@@ -71,7 +72,7 @@ python scripts/gemini.py                          # default: gemini-3.1-pro-prev
 python scripts/gemini.py --thinking medium
 
 # xAI Grok
-python scripts/grok.py --model 4.20-ma           # Grok 4.20 Multi-Agent (RECON config)
+python scripts/grok.py --model 4.3               # Grok 4.3 (RECON config)
 python scripts/grok.py --model 4.1-fast
 
 # Exa
@@ -94,7 +95,8 @@ These are the exact configs used to produce the published RECON numbers:
 | Sixtyfour High | `sixtyfour.py` | `--tier high` |
 | GPT-5.4 xhigh | `gpt.py` | `--model gpt-5.4 --reasoning xhigh` |
 | Gemini 3.1 Pro | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
-| Grok 4.20 Multi-Agent | `grok.py` | `--model 4.20-ma` |
+| Grok 4.3 | `grok.py` | `--model 4.3` |
+| Exa Deep | `exa.py` | `--type deep` |
 | Exa Deep Reasoning | `exa.py` | `--type deep-reasoning` |
 | Parallel Ultra | `parallel.py` | `--processor ultra` |
 | Parallel Ultra 2x | `parallel.py` | `--processor ultra2x` |
@@ -108,11 +110,11 @@ Results are saved to `results/runs/` as JSON with per-person verdicts:
 {
   "config": { ... },
   "summary": {
-    "correct": 245,
-    "wrong": 31,
-    "missing": 198,
-    "total_fields": 474,
-    "accuracy": 51.7
+    "correct": 369,
+    "wrong": 78,
+    "missing": 67,
+    "total_fields": 514,
+    "accuracy": 71.8
   },
   "results": [
     {

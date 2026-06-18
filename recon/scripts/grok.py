@@ -16,7 +16,7 @@ import os
 import time
 
 import httpx
-from judge import load_people, EvalRunner
+from judge import load_people, EvalRunner, post_with_retry
 
 XAI_API_KEY = os.environ["XAI_API_KEY"]
 XAI_ENDPOINT = "https://api.x.ai/v1/responses"
@@ -44,6 +44,7 @@ async def call_api(client: httpx.AsyncClient, item: dict, model: str) -> dict:
     person_key = (item.get("name") or item["person_info"]).replace(" ", "_").lower()
     payload = {
         "model": model,
+        "reasoning_effort": "high",
         "input": (
             f"You are a research agent. Given a description of a person, find specific facts about them.\n\n"
             f"Person: {item['person_info']}\n\n"
@@ -56,12 +57,12 @@ async def call_api(client: httpx.AsyncClient, item: dict, model: str) -> dict:
         "text": {"format": build_schema(item["fields"])},
         "prompt_cache_key": f"recon_eval_{person_key}",
     }
-    resp = await client.post(
+    resp = await post_with_retry(
+        client,
         XAI_ENDPOINT,
         json=payload,
         headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
     )
-    resp.raise_for_status()
     return resp.json()
 
 

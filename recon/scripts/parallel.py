@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 from openai import AsyncOpenAI
 
-from judge import load_people, judge_fields, RUNS_DIR
+from judge import load_people, judge_fields, clean_struct, RUNS_DIR
 
 PARALLEL_API_KEY = os.environ["PARALLEL_API_KEY"]
 PARALLEL_BASE = "https://api.parallel.ai"
@@ -126,10 +126,9 @@ async def poll_one(
             if isinstance(output, str):
                 try:
                     output = json.loads(output)
-                except Exception:
+                except json.JSONDecodeError:
                     output = {}
-            if not isinstance(output, dict):
-                output = {}
+            output = clean_struct(output, item["fields"])
 
             verdicts = await judge_fields(oai, judge_sem, item["person_info"], output, item["fields"])
             c = sum(1 for v in verdicts.values() if v["match"] == "correct")

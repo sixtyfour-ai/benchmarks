@@ -7,10 +7,12 @@ All eval scripts import from here. Not meant to be run directly.
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -42,6 +44,77 @@ def load_people(n: int | None = None) -> list[dict]:
     return data[:n] if n else data
 
 
+# Serialization fragments some providers leak into field values when their
+# structured-output JSON is truncated or malformed (e.g. Exa deep mode).
+_STRUCT_JUNK = re.compile(r"top_results|citations\s*:\s*\[|confidence\s*:\s*[\[{]")
+
+
+def clean_answer(val) -> str:
+    """Coerce a raw model field value into a clean answer string.
+
+    Returns "" (i.e. 'no answer' -> scored as missing, never wrong) for nulls,
+    booleans, and malformed/structural fragments. Real scalar answers — including
+    numbers and JSON-serialized lists/objects — are preserved.
+    """
+    if val is None or isinstance(val, bool):
+        return ""
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, (dict, list)):
+        try:
+            val = json.dumps(val, ensure_ascii=False)
+        except (TypeError, ValueError):
+            val = str(val)
+    s = str(val).strip()
+    if not s or s in ('""', "''", '""""', '"', "'"):
+        return ""
+    if _STRUCT_JUNK.search(s):
+        return ""
+    # pure JSON-structural punctuation (no letters/digits/other content)
+    if re.fullmatch(r"""[\s{}\[\]"';:,.\-]*""", s):
+        return ""
+    return s
+
+
+def clean_struct(output: dict, fields: list[dict]) -> dict:
+    """Filter a raw output dict to exactly the requested fields, each cleaned.
+
+    Drops leaked/unexpected keys and normalizes every value via clean_answer,
+    so downstream judging and stored results never see serialization garbage.
+    """
+    if not isinstance(output, dict):
+        return {}
+    return {f["fieldname"]: clean_answer(output.get(f["fieldname"])) for f in fields}
+
+
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
+async def post_with_retry(client, url, *, max_retries: int = 6, **kwargs):
+    """POST with exponential backoff on rate-limit / transient 5xx responses.
+
+    Shared by the provider runners so each is robust out of the box. Retries on
+    429/500/502/503/504 and on transport/timeout errors; raises on other 4xx.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = await client.post(url, **kwargs)
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            last_exc = e
+            await asyncio.sleep(min(2 ** attempt, 30))
+            continue
+        if resp.status_code in _RETRY_STATUS:
+            await asyncio.sleep(min(2 ** attempt, 30))
+            continue
+        resp.raise_for_status()
+        return resp
+    if last_exc:
+        raise last_exc
+    resp.raise_for_status()
+    return resp
+
+
 async def judge_fields(
     oai: AsyncOpenAI,
     sem: asyncio.Semaphore,
@@ -57,7 +130,7 @@ async def judge_fields(
         exp_str = (exp_val or "").strip()
         if not exp_str:
             continue
-        act_str = str(actual.get(field) or "").strip()
+        act_str = clean_answer(actual.get(field))
         if not act_str:
             verdicts[field] = {"match": "missing", "reason": "actual is empty/null"}
         else:

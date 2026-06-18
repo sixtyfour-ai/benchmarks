@@ -16,7 +16,7 @@ import os
 import time
 
 import httpx
-from judge import load_people, EvalRunner
+from judge import load_people, EvalRunner, clean_struct, post_with_retry
 
 EXA_API_KEY = os.environ["EXA_API_KEY"]
 EXA_ENDPOINT = "https://api.exa.ai/search"
@@ -31,37 +31,34 @@ def build_schema(fields: list[dict]) -> dict:
 
 async def call_api(client: httpx.AsyncClient, item: dict, search_type: str) -> dict:
     fields_desc = "\n".join(f"- {f['fieldname']}: {f['description']}" for f in item["fields"])
-    resp = await client.post(
-        EXA_ENDPOINT,
-        json={
-            "query": (
-                f"You are a research agent. Given a description of a person, find specific facts about them.\n\n"
-                f"Person: {item['person_info']}\n\n"
-                f"Find the following fields:\n{fields_desc}\n\n"
-                f"For each field, search thoroughly using the description as guidance. "
-                f"Cross-reference multiple sources for accuracy. "
-                f"If you cannot find a definitive answer, return an empty string for that field."
-            ),
-            "type": search_type,
-            "outputSchema": build_schema(item["fields"]),
-            "numResults": 10,
-        },
-        headers={"x-api-key": EXA_API_KEY, "Content-Type": "application/json"},
-    )
-    resp.raise_for_status()
+    payload = {
+        "query": (
+            f"You are a research agent. Given a description of a person, find specific facts about them.\n\n"
+            f"Person: {item['person_info']}\n\n"
+            f"Find the following fields:\n{fields_desc}\n\n"
+            f"For each field, search thoroughly using the description as guidance. "
+            f"Cross-reference multiple sources for accuracy. "
+            f"If you cannot find a definitive answer, return an empty string for that field."
+        ),
+        "type": search_type,
+        "outputSchema": build_schema(item["fields"]),
+        "numResults": 10,
+    }
+    headers = {"x-api-key": EXA_API_KEY, "Content-Type": "application/json"}
+    resp = await post_with_retry(client, EXA_ENDPOINT, json=payload, headers=headers)
     return resp.json()
 
 
-def extract_output(response: dict) -> dict:
+def extract_output(response: dict, fields: list[dict]) -> dict:
     output = response.get("output", {})
     if isinstance(output, dict) and "content" in output:
         output = output["content"]
     if isinstance(output, str):
         try:
-            return json.loads(output)
-        except Exception:
-            return {}
-    return output if isinstance(output, dict) else {}
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            output = {}
+    return clean_struct(output, fields)
 
 
 def extract_metadata(response: dict) -> dict:
@@ -88,7 +85,7 @@ async def main():
             try:
                 async with httpx.AsyncClient(timeout=3600.0) as client:
                     response = await call_api(client, item, args.type)
-                output = extract_output(response)
+                output = extract_output(response, item["fields"])
                 metadata = extract_metadata(response)
                 await runner.record(item, output, time.time() - t0, metadata)
             except Exception as e:

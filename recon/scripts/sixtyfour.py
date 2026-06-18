@@ -42,18 +42,31 @@ def build_struct(fields: list[dict]) -> dict:
     return {f["fieldname"]: f["description"] for f in fields}
 
 
-async def submit_async(client: httpx.AsyncClient, item: dict, tier: str) -> str:
-    resp = await client.post(
-        f"{SIXTYFOUR_BASE}/people-intelligence-async",
-        json={
-            "lead_info": _parse_lead_info(item["person_info"]),
-            "struct": build_struct(item["fields"]),
-            "tier": tier,
-        },
-        headers=HEADERS,
-    )
-    resp.raise_for_status()
-    return resp.json()["task_id"]
+async def submit_async(client: httpx.AsyncClient, item: dict, tier: str, max_retries: int = 5) -> str:
+    payload = {
+        "lead_info": _parse_lead_info(item["person_info"]),
+        "struct": build_struct(item["fields"]),
+        "tier": tier,
+        "field_confidence": True,
+    }
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = await client.post(
+                f"{SIXTYFOUR_BASE}/people-intelligence-async",
+                json=payload,
+                headers=HEADERS,
+            )
+            if resp.status_code in (429, 500, 502, 503, 504):
+                last_error = RuntimeError(f"submit HTTP {resp.status_code}")
+                await asyncio.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()
+            return resp.json()["task_id"]
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            last_error = e
+            await asyncio.sleep(2 ** attempt)
+    raise RuntimeError(f"submit failed after {max_retries} retries: {last_error}")
 
 
 def _parse_lead_info(person_info: str) -> dict:
@@ -75,11 +88,16 @@ async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 
     deadline = time.time() + timeout
     while time.time() < deadline:
         await asyncio.sleep(10)
-        resp = await client.get(
-            f"{SIXTYFOUR_BASE}/job-status/{task_id}",
-            headers=HEADERS,
-        )
-        resp.raise_for_status()
+        try:
+            resp = await client.get(
+                f"{SIXTYFOUR_BASE}/job-status/{task_id}",
+                headers=HEADERS,
+            )
+            if resp.status_code in (429, 500, 502, 503, 504):
+                continue
+            resp.raise_for_status()
+        except (httpx.TransportError, httpx.TimeoutException):
+            continue
         data = resp.json()
         status = data.get("status", "").lower()
         if status == "completed":
@@ -96,6 +114,7 @@ def extract_output(result: dict) -> dict:
 def extract_metadata(result: dict) -> dict:
     return {
         "confidence_score": result.get("confidence_score"),
+        "field_confidence": result.get("field_confidence"),
         "num_references": len(result.get("references", {})),
     }
 
@@ -121,19 +140,24 @@ async def main():
 
     print(f"Running Sixtyfour tier={args.tier} on {len(people)} people, concurrency={args.concurrency}", flush=True)
 
-    async def process(item):
+    limits = httpx.Limits(
+        max_connections=args.concurrency * 2,
+        max_keepalive_connections=args.concurrency,
+    )
+
+    async def process(client, item):
         async with sem:
             t0 = time.time()
             try:
-                async with httpx.AsyncClient(timeout=1800.0) as client:
-                    task_id = await submit_async(client, item, args.tier)
-                    result = await poll_result(client, task_id)
+                task_id = await submit_async(client, item, args.tier)
+                result = await poll_result(client, task_id)
                 output = extract_output(result)
                 await runner.record(item, output, time.time() - t0, extract_metadata(result))
             except Exception as e:
                 await runner.record_error(item, time.time() - t0, e)
 
-    await asyncio.gather(*(process(p) for p in people))
+    async with httpx.AsyncClient(timeout=60.0, limits=limits) as client:
+        await asyncio.gather(*(process(client, p) for p in people))
     runner.summary()
 
 

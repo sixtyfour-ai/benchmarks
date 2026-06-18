@@ -16,7 +16,7 @@ import os
 import time
 
 import httpx
-from judge import load_people, EvalRunner
+from judge import load_people, EvalRunner, post_with_retry
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -32,7 +32,8 @@ def build_schema(fields: list[dict]) -> dict:
 
 async def call_api(client: httpx.AsyncClient, item: dict, model: str, thinking: str) -> dict:
     fields_desc = "\n".join(f"- {f['fieldname']}: {f['description']}" for f in item["fields"])
-    resp = await client.post(
+    resp = await post_with_retry(
+        client,
         f"{GEMINI_BASE}/{model}:generateContent",
         json={
             "contents": [{"parts": [{"text": (
@@ -53,7 +54,6 @@ async def call_api(client: httpx.AsyncClient, item: dict, model: str, thinking: 
         params={"key": GEMINI_API_KEY},
         headers={"Content-Type": "application/json"},
     )
-    resp.raise_for_status()
     return resp.json()
 
 
