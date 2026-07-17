@@ -17,13 +17,11 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
 
-from judge import load_people, judge_fields, clean_struct, RUNS_DIR
+from judge import load_people, EvalRunner, clean_struct, post_with_retry, RUNS_DIR
 
 PARALLEL_API_KEY = os.environ["PARALLEL_API_KEY"]
 PARALLEL_BASE = "https://api.parallel.ai"
@@ -59,7 +57,8 @@ def save_checkpoint(path: Path, ckpt: dict):
 
 async def submit_one(client: httpx.AsyncClient, item: dict, processor: str) -> str:
     fields = ", ".join(f["fieldname"] for f in item["fields"])
-    resp = await client.post(
+    resp = await post_with_retry(
+        client,
         f"{PARALLEL_BASE}/v1/tasks/runs",
         json={
             "task_spec": {
@@ -86,8 +85,7 @@ async def submit_one(client: httpx.AsyncClient, item: dict, processor: str) -> s
 
 async def poll_one(
     client: httpx.AsyncClient,
-    oai: AsyncOpenAI,
-    judge_sem: asyncio.Semaphore,
+    runner: EvalRunner,
     poll_sem: asyncio.Semaphore,
     item: dict,
     run_id: str,
@@ -95,13 +93,16 @@ async def poll_one(
     ckpt: dict,
     ckpt_path: Path,
 ) -> dict:
-    label = (item.get("name") or item["person_info"])[:30]
-
     async with poll_sem:
         try:
             while True:
                 await asyncio.sleep(15)
-                resp = await client.get(f"{PARALLEL_BASE}/v1/tasks/runs/{run_id}")
+                try:
+                    resp = await client.get(f"{PARALLEL_BASE}/v1/tasks/runs/{run_id}")
+                except (httpx.TransportError, httpx.TimeoutException):
+                    continue
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    continue
                 resp.raise_for_status()
                 status = resp.json().get("status", "")
                 if status in ("completed", "failed", "cancelled"):
@@ -110,15 +111,21 @@ async def poll_one(
             elapsed = time.time() - t0
 
             if status != "completed":
-                print(f"  {label:30s} {status.upper()} [{elapsed:.0f}s]", flush=True)
-                result = {"person": item["person_info"], "name": item.get("name", ""), "run_id": run_id,
-                          "status": status, "elapsed": round(elapsed, 1), "error": status,
-                          "correct": 0, "wrong": 0, "missing": 0, "verdicts": {}, "output": {}}
+                result = await runner.record_error(item, elapsed, RuntimeError(status))
                 ckpt["completed"][item["person_info"]] = result
                 save_checkpoint(ckpt_path, ckpt)
                 return result
 
-            resp = await client.get(f"{PARALLEL_BASE}/v1/tasks/runs/{run_id}/result")
+            for attempt in range(6):
+                try:
+                    resp = await client.get(f"{PARALLEL_BASE}/v1/tasks/runs/{run_id}/result")
+                except (httpx.TransportError, httpx.TimeoutException):
+                    await asyncio.sleep(min(2 ** attempt, 30))
+                    continue
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    await asyncio.sleep(min(2 ** attempt, 30))
+                    continue
+                break
             resp.raise_for_status()
             output = resp.json().get("output", {})
             if isinstance(output, dict) and "content" in output:
@@ -130,26 +137,13 @@ async def poll_one(
                     output = {}
             output = clean_struct(output, item["fields"])
 
-            verdicts = await judge_fields(oai, judge_sem, item["person_info"], output, item["fields"])
-            c = sum(1 for v in verdicts.values() if v["match"] == "correct")
-            w = sum(1 for v in verdicts.values() if v["match"] == "wrong")
-            m = sum(1 for v in verdicts.values() if v["match"] == "missing")
-
-            print(f"  {label:30s} C={c} W={w} M={m} [{elapsed:.0f}s]", flush=True)
-
-            result = {"person": item["person_info"], "name": item.get("name", ""), "run_id": run_id,
-                      "status": "completed", "elapsed": round(elapsed, 1),
-                      "correct": c, "wrong": w, "missing": m, "verdicts": verdicts, "output": output}
+            result = await runner.record(item, output, elapsed, {"run_id": run_id, "status": "completed"})
             ckpt["completed"][item["person_info"]] = result
             save_checkpoint(ckpt_path, ckpt)
             return result
 
         except Exception as e:
-            elapsed = time.time() - t0
-            print(f"  {label:30s} ERROR [{elapsed:.0f}s]: {str(e)[:100]}", flush=True)
-            result = {"person": item["person_info"], "name": item.get("name", ""), "run_id": run_id,
-                      "elapsed": round(elapsed, 1), "error": str(e),
-                      "correct": 0, "wrong": 0, "missing": 0, "verdicts": {}, "output": {}}
+            result = await runner.record_error(item, time.time() - t0, e)
             ckpt["completed"][item["person_info"]] = result
             save_checkpoint(ckpt_path, ckpt)
             return result
@@ -178,8 +172,11 @@ async def main():
     print(f"Running Parallel {args.processor} on {len(to_run)} people (of {len(people)}), concurrency={args.concurrency}", flush=True)
     print(f"Est cost: ${len(to_run) * cpt / 1000:.2f}", flush=True)
 
-    oai = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    judge_sem = asyncio.Semaphore(20)
+    runner = EvalRunner(f"parallel_{args.processor}", vars(args))
+    # previously completed (already-judged) results from the checkpoint count toward this run
+    for entry in people:
+        if entry["person_info"] in ckpt["completed"]:
+            runner.results.append(ckpt["completed"][entry["person_info"]])
     poll_sem = asyncio.Semaphore(args.concurrency)
     t_start = time.time()
 
@@ -198,41 +195,14 @@ async def main():
                 save_checkpoint(ckpt_path, ckpt)
                 print(f"  Submitted: {person[:30]} ({run_id})", flush=True)
 
-            tasks.append(poll_one(client, oai, judge_sem, poll_sem, item, run_id, t0, ckpt, ckpt_path))
+            tasks.append(poll_one(client, runner, poll_sem, item, run_id, t0, ckpt, ckpt_path))
 
         await asyncio.gather(*tasks)
 
-    all_results = []
-    for entry in people:
-        person = entry["person_info"]
-        if person in ckpt["completed"]:
-            all_results.append(ckpt["completed"][person])
-
-    ok = [r for r in all_results if r.get("status") == "completed"]
-    total_c = sum(r["correct"] for r in ok)
-    total_w = sum(r["wrong"] for r in ok)
-    total_m = sum(r["missing"] for r in ok)
-    total_f = total_c + total_w + total_m
-    lats = sorted(r["elapsed"] for r in ok if r.get("elapsed"))
-
-    print(f"\n{'='*60}", flush=True)
-    print(f"  Parallel {args.processor} — {len(ok)}/{len(people)} completed — {time.time() - t_start:.0f}s", flush=True)
-    if total_f:
-        print(f"  Accuracy: {total_c}/{total_f} = {total_c/total_f*100:.1f}%  (C={total_c} W={total_w} M={total_m})", flush=True)
-    if lats:
-        print(f"  Median latency: {lats[len(lats)//2]:.0f}s", flush=True)
+    ok = [r for r in runner.results if "error" not in r]
     print(f"  Cost: ${len(ok) * cpt / 1000:.2f}", flush=True)
-    print(f"{'='*60}", flush=True)
-
-    out_path = RUNS_DIR / f"parallel_{args.processor}_{datetime.now():%Y%m%d_%H%M}_judged.json"
-    out_path.write_text(json.dumps({
-        "config": vars(args),
-        "total_elapsed_s": round(time.time() - t_start, 1),
-        "summary": {"correct": total_c, "wrong": total_w, "missing": total_m, "total": total_f,
-                     "accuracy": round(total_c / total_f * 100, 1) if total_f else 0},
-        "results": all_results,
-    }, indent=2, default=str))
-    print(f"Saved: {out_path}", flush=True)
+    runner._save()
+    runner.summary()
 
 
 if __name__ == "__main__":

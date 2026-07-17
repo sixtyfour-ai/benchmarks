@@ -101,7 +101,7 @@ def extract_metadata(response: dict) -> dict:
 
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=list(MODELS), default="4.20-ma")
+    p.add_argument("--model", choices=list(MODELS), default="4.3")
     p.add_argument("--people", type=int, default=None)
     p.add_argument("--concurrency", type=int, default=5)
     args = p.parse_args()
