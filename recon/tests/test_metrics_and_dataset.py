@@ -1,14 +1,4 @@
-"""
-Two scoring definitions ship in this repo and both are legitimate; they are pinned here so
-the distinction stays deliberate.
-
-  pooled          _metrics(): (correct - wrong) / total_fields  -- README.md, and the
-                  `weighted_formula` recorded in results/*.json
-  macro (25%/bkt) _summary_dict()["scores"]["overall"]: equal-weight mean of the four
-                  bucket scores -- what leaderboard.py prints
-
-They disagree whenever buckets differ in size, which is the normal case.
-"""
+"""Published metrics reproduce, and the two scoring views stay distinct."""
 import hashlib
 import json
 from pathlib import Path
@@ -35,8 +25,8 @@ def test_published_rows_reproduce_from_their_own_counts():
 
 
 def test_pooled_and_macro_disagree_on_unequal_buckets():
-    """Not a bug — a documented choice. The test exists so nobody 'fixes' one into the
-    other by accident, and so the gap is visible in CI output."""
+    """pooled = (c-w)/total (README, results JSON); macro = mean of bucket scores
+    (leaderboard.py). Both are intended; this pins that nobody merges them by accident."""
     r = J.EvalRunner.__new__(J.EvalRunner)
     r.results = [
         {"person": "a", "correct": 90, "wrong": 10, "missing": 0,

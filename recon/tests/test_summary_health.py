@@ -1,7 +1,4 @@
-"""
-A run summary must always carry the judge-health figure alongside the score, so a number
-can never be published without the caveat that qualifies it.
-"""
+"""Run summaries always carry judge health alongside the score."""
 import json
 
 import pytest

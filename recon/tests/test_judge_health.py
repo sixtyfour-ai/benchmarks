@@ -1,11 +1,4 @@
-"""
-Tests for the judge-failure path.
-
-The harness degrades to substring containment when the judge call cannot be completed
-(judge_fields, judge.py). That behaviour is reasonable on its own; what these tests pin
-down is that a degraded field is always *tagged and counted*, so a published score can
-never omit how much of it the judge did not actually adjudicate.
-"""
+"""Degraded judge verdicts stay tagged and countable."""
 import asyncio
 import json
 
