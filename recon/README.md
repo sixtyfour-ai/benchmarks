@@ -49,6 +49,9 @@ GEMINI_API_KEY=your-key
 XAI_API_KEY=your-key
 EXA_API_KEY=your-key
 PARALLEL_API_KEY=your-key
+MOONSHOT_API_KEY=your-key
+DEEPSEEK_API_KEY=your-key
+ZAI_API_KEY=your-key
 ```
 
 Get a Sixtyfour API key at [app.sixtyfour.ai/keys](https://app.sixtyfour.ai/keys).
@@ -66,6 +69,11 @@ python scripts/sixtyfour.py --tier high          # requires access — contact s
 # OpenAI GPT
 python scripts/gpt.py                            # default: gpt-5.4, reasoning=xhigh
 python scripts/gpt.py --model gpt-5.4 --reasoning high
+
+# Native provider web-research harnesses
+python scripts/native_models.py --provider kimi --reasoning max
+python scripts/native_models.py --provider deepseek --reasoning none
+python scripts/native_models.py --provider glm --reasoning max
 
 # Google Gemini
 python scripts/gemini.py                          # default: gemini-3.1-pro-preview, thinking=high
