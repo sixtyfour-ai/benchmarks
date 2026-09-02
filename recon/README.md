@@ -71,9 +71,9 @@ python scripts/gpt.py                            # default: gpt-5.4, reasoning=x
 python scripts/gpt.py --model gpt-5.4 --reasoning high
 
 # Native provider web-research harnesses
-python scripts/native_models.py --provider kimi --reasoning max
-python scripts/native_models.py --provider deepseek --reasoning none
-python scripts/native_models.py --provider glm --reasoning max
+python scripts/kimi.py --reasoning max
+python scripts/deepseek.py --reasoning none
+python scripts/glm.py --reasoning max
 
 # Google Gemini
 python scripts/gemini.py                          # default: gemini-3.1-pro-preview, thinking=high

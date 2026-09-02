@@ -1,7 +1,9 @@
 import asyncio
+import io
 import json
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -9,7 +11,10 @@ from unittest.mock import AsyncMock, patch
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import native_models  # noqa: E402
+import deepseek  # noqa: E402
+import glm  # noqa: E402
+import kimi  # noqa: E402
+import native_model_common as common  # noqa: E402
 
 
 FIELDS = [
@@ -29,24 +34,26 @@ class FakeResponse:
 
 class NativeModelTests(unittest.IsolatedAsyncioTestCase):
     def test_positive_int_rejects_zero_and_negative_values(self):
-        self.assertEqual(native_models.positive_int("7"), 7)
+        self.assertEqual(common.positive_int("7"), 7)
         for value in ("0", "-1"):
             with self.subTest(value=value), self.assertRaises(
-                native_models.argparse.ArgumentTypeError
+                common.argparse.ArgumentTypeError
             ):
-                native_models.positive_int(value)
+                common.positive_int(value)
 
-    def test_search_round_limit_matches_provider_runtime(self):
-        self.assertEqual(native_models.resolve_max_search_rounds("kimi", None), 10)
-        self.assertEqual(native_models.resolve_max_search_rounds("kimi", 4), 4)
-        self.assertEqual(native_models.resolve_max_search_rounds("glm", None), 10)
-        self.assertEqual(native_models.resolve_max_search_rounds("glm", 4), 4)
-        self.assertIsNone(native_models.resolve_max_search_rounds("deepseek", None))
-        with self.assertRaisesRegex(SystemExit, "DeepSeek controls"):
-            native_models.resolve_max_search_rounds("deepseek", 4)
+    def test_search_round_limit_is_only_on_client_search_runners(self):
+        self.assertEqual(kimi.CONFIG.default_search_rounds, 10)
+        self.assertEqual(glm.CONFIG.default_search_rounds, 10)
+        self.assertIsNone(deepseek.CONFIG.default_search_rounds)
+
+        with patch.object(sys, "argv", ["kimi.py", "--max-search-rounds", "4"]):
+            self.assertEqual(common.parse_args(kimi.CONFIG).max_search_rounds, 4)
+        with patch.object(sys, "argv", ["deepseek.py", "--max-search-rounds", "4"]):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                common.parse_args(deepseek.CONFIG)
 
     def test_extracts_embedded_json_without_interpreting_prose(self):
-        parsed = native_models._json_content(
+        parsed = common.json_content(
             'I researched the person. Final answer:\n'
             '{"employer":"Acme","hometown":"London"}\n'
             'Sources were checked.'
@@ -54,9 +61,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed, {"employer": "Acme", "hometown": "London"})
 
         with self.assertRaisesRegex(ValueError, "no JSON object"):
-            native_models._json_content("The employer appears to be Acme.")
+            common.json_content("The employer appears to be Acme.")
 
-        output, valid = native_models._terminal_output("I cannot provide that information.")
+        output, valid = common.terminal_output("I cannot provide that information.")
         self.assertEqual(output, {})
         self.assertFalse(valid)
 
@@ -106,11 +113,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             requests.append(kwargs)
             return responses.pop(0)
 
-        with patch.object(native_models, "post_with_retry", new=fake_post):
-            output, metadata = await native_models.call_kimi(
+        with patch.object(kimi, "post_with_retry", new=fake_post):
+            output, metadata = await kimi.call_kimi(
                 object(),
                 ITEM,
-                endpoint="https://example.test/chat",
                 api_key="secret",
                 model="kimi-k3",
                 reasoning="max",
@@ -162,11 +168,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         fake_post = AsyncMock(return_value=response)
-        with patch.object(native_models, "post_with_retry", new=fake_post):
-            output, metadata = await native_models.call_deepseek(
+        with patch.object(deepseek, "post_with_retry", new=fake_post):
+            output, metadata = await deepseek.call_deepseek(
                 object(),
                 ITEM,
-                endpoint="https://example.test/responses",
                 api_key="secret",
                 model="deepseek-v4-flash",
                 reasoning="none",
@@ -220,11 +225,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             requests.append(kwargs)
             return responses.pop(0)
 
-        with patch.object(native_models, "post_with_retry", new=fake_post):
-            output, metadata = await native_models.call_deepseek(
+        with patch.object(deepseek, "post_with_retry", new=fake_post):
+            output, metadata = await deepseek.call_deepseek(
                 object(),
                 ITEM,
-                endpoint="https://example.test/responses",
                 api_key="secret",
                 model="deepseek-v4-flash",
                 reasoning="none",
@@ -239,7 +243,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         repair = requests[1]["json"]
         self.assertNotIn("tools", repair)
         self.assertIn(research_output[0], repair["input"])
-        self.assertEqual(repair["input"][-1]["content"], native_models.FINALIZE_PROMPT)
+        self.assertEqual(repair["input"][-1]["content"], common.FINALIZE_PROMPT)
 
     async def test_glm_uses_zai_search_and_thinking_toggle(self):
         assistant = {
@@ -299,12 +303,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             requests.append((request_endpoint, kwargs))
             return responses.pop(0)
 
-        with patch.object(native_models, "post_with_retry", new=fake_post):
-            output, metadata = await native_models.call_glm(
+        with patch.object(glm, "post_with_retry", new=fake_post):
+            output, metadata = await glm.call_glm(
                 object(),
                 ITEM,
-                endpoint="https://example.test/chat",
-                search_endpoint="https://example.test/search",
                 api_key="secret",
                 model="glm-5.3",
                 reasoning="max",
@@ -321,7 +323,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(body["reasoning_effort"], "max")
         self.assertEqual(body["tools"][0]["function"]["name"], "web_search")
-        self.assertEqual(requests[1][0], "https://example.test/search")
+        self.assertEqual(requests[1][0], glm.SEARCH_ENDPOINT)
         self.assertEqual(requests[1][1]["json"]["search_query"], "Ada Example Acme")
         continuation = requests[2][1]["json"]
         self.assertEqual(
