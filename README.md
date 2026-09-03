@@ -45,3 +45,13 @@ python scripts/sixtyfour.py
 ## License
 
 MIT
+
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+No network and no API keys: the judge client is faked, so the suite covers the scoring
+path and the judge-failure path only.

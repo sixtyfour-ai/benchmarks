@@ -1,0 +1,9 @@
+# Pinned so a re-run of the published benchmark resolves the same libraries.
+# Versions below are the ones this repo's scripts were last verified against.
+httpx==0.28.1
+openai==3.3.1
+python-dotenv==1.2.3
+
+# Test-only
+pytest==9.1.1
+pytest-asyncio==1.4.0

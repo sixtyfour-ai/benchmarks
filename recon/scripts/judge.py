@@ -5,6 +5,7 @@ All eval scripts import from here. Not meant to be run directly.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,13 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 DATA_DIR = Path(__file__).parent.parent / "data"
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 RUNS_DIR = RESULTS_DIR / "runs"
+
+# The judge call is retried this many times before a person's fields are degraded to
+# substring containment. Degraded fields are tagged and counted, never silently mixed
+# in with real verdicts.
+JUDGE_MAX_ATTEMPTS = 3
+# Fraction of degraded fields above which a run is flagged as not trustworthy.
+JUDGE_DEGRADED_WARN_PCT = 1.0
 
 JUDGE_PROMPT = """You are an eval judge comparing enrichment results against verified ground truth.
 For each field, decide: CORRECT or WRONG. No partial credit.
@@ -49,7 +57,19 @@ def load_people(n: int | None = None) -> list[dict]:
     dataset file can be dropped in unchanged.
     """
     path = Path(os.environ.get("PEOPLE_DATA") or (DATA_DIR / "people_data.json"))
-    data = json.loads(path.read_text())
+    raw = path.read_bytes()
+
+    # results/*.json publishes a dataset_sha256. Verify against it when the caller supplies
+    # one, so a run can't silently be scored against a different dataset than it reports.
+    expected_sha = os.environ.get("PEOPLE_DATA_SHA256")
+    if expected_sha:
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if actual_sha != expected_sha:
+            raise ValueError(
+                f"dataset hash mismatch for {path}: expected {expected_sha}, got {actual_sha}"
+            )
+
+    data = json.loads(raw)
     if isinstance(data, dict):
         data = data["people"]
     return data[:n] if n else data
@@ -159,39 +179,63 @@ async def judge_fields(
     user_msg = f"Person: {person}\n\n" + "\n\n".join(lines)
 
     async with sem:
-        try:
-            resp = await oai.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": JUDGE_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0,
-                max_tokens=2048,
-            )
-            raw = resp.choices[0].message.content.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
-                raw = raw.strip()
-            llm_verdicts = json.loads(raw)
-        except Exception as e:
+        last_exc: Exception | None = None
+        llm_verdicts = None
+        for attempt in range(JUDGE_MAX_ATTEMPTS):
+            try:
+                resp = await oai.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {"role": "system", "content": JUDGE_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                    max_tokens=2048,
+                )
+                raw = (resp.choices[0].message.content or "").strip()
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                    if raw.endswith("```"):
+                        raw = raw[:-3]
+                    raw = raw.strip()
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"judge returned {type(parsed).__name__}, expected object")
+                llm_verdicts = parsed
+                break
+            except Exception as e:
+                last_exc = e
+                if attempt + 1 < JUDGE_MAX_ATTEMPTS:
+                    await asyncio.sleep(min(2 ** attempt, 8))
+
+        if llm_verdicts is None:
+            # Every attempt failed. Degrade to substring containment, but TAG every
+            # field so the rate is countable downstream — see _summary_dict()["judge_health"].
             llm_verdicts = {}
             for field, (act, exp) in to_judge.items():
                 if any(v.strip() and (v.strip().lower() in act.lower() or act.lower() in v.strip().lower())
                        for v in exp.split(" | ")):
-                    llm_verdicts[field] = {"match": "correct", "reason": "fallback: substring"}
+                    llm_verdicts[field] = {"match": "correct", "reason": "fallback: substring",
+                                           "degraded": "substring_fallback"}
                 else:
-                    llm_verdicts[field] = {"match": "wrong", "reason": f"judge error: {e}"}
+                    llm_verdicts[field] = {"match": "wrong", "reason": f"judge error: {last_exc}",
+                                           "degraded": "judge_error"}
 
     for field in to_judge:
         v = llm_verdicts.get(field)
         if v and isinstance(v, dict):
-            match = v.get("match", "wrong").lower()
-            verdicts[field] = {"match": match if match in ("correct", "wrong") else "wrong", "reason": v.get("reason", "")}
+            raw_match = str(v.get("match", "wrong")).lower()
+            match = raw_match if raw_match in ("correct", "wrong") else "wrong"
+            verdicts[field] = {"match": match, "reason": v.get("reason", "")}
+            if v.get("degraded"):
+                verdicts[field]["degraded"] = v["degraded"]
+            elif raw_match not in ("correct", "wrong"):
+                # judge answered, but not with a verdict we recognise
+                verdicts[field]["degraded"] = "unparsed_match"
         else:
-            verdicts[field] = {"match": "wrong", "reason": "no verdict returned"}
+            verdicts[field] = {"match": "wrong", "reason": "no verdict returned",
+                               "degraded": "no_verdict"}
 
     return verdicts
 
@@ -215,6 +259,13 @@ class EvalRunner:
         w = sum(1 for v in verdicts.values() if v["match"] == "wrong")
         m = sum(1 for v in verdicts.values() if v["match"] == "missing")
 
+        # Fields the judge did not actually adjudicate (see judge_fields). Counted so a
+        # run can never report a score without also reporting how much of it was guessed.
+        degraded: dict[str, int] = {}
+        for v in verdicts.values():
+            if v.get("degraded"):
+                degraded[v["degraded"]] = degraded.get(v["degraded"], 0) + 1
+
         # per-bucket tallies when the dataset tags fields with a use-case bucket
         field_bucket = {f["fieldname"]: f["bucket"] for f in item["fields"] if f.get("bucket")}
         buckets: dict[str, dict] = {}
@@ -226,13 +277,15 @@ class EvalRunner:
             b[v["match"]] += 1
 
         label = (item.get("name") or item["person_info"])[:30]
-        print(f"  {label:30s} C={c} W={w} M={m} [{elapsed:.0f}s]", flush=True)
+        warn = f"  !! JUDGE DEGRADED {sum(degraded.values())} field(s): {degraded}" if degraded else ""
+        print(f"  {label:30s} C={c} W={w} M={m} [{elapsed:.0f}s]{warn}", flush=True)
 
         result = {
             "person": item["person_info"],
             "name": item.get("name", ""),
             "elapsed": round(elapsed, 1),
             "correct": c, "wrong": w, "missing": m,
+            **({"degraded": degraded} if degraded else {}),
             **({"buckets": buckets} if buckets else {}),
             "verdicts": verdicts,
             "output": output,
@@ -284,10 +337,21 @@ class EvalRunner:
         w = sum(r["wrong"] for r in ok)
         m = sum(r["missing"] for r in ok)
         t = c + w + m
+        degraded: dict[str, int] = {}
+        for r in ok:
+            for k, v in (r.get("degraded") or {}).items():
+                degraded[k] = degraded.get(k, 0) + v
+        n_degraded = sum(degraded.values())
         out = {
             "correct": c, "wrong": w, "missing": m, "total_fields": t,
             "accuracy": round(c / t * 100, 1) if t else 0,
             "completed": len(ok), "errors": len(self.results) - len(ok),
+            "judge_health": {
+                "degraded_fields": n_degraded,
+                "degraded_pct": round(n_degraded / t * 100, 2) if t else 0.0,
+                "breakdown": degraded,
+                "trustworthy": n_degraded / t * 100 <= JUDGE_DEGRADED_WARN_PCT if t else True,
+            },
         }
         buckets: dict[str, dict] = {}
         for r in ok:
@@ -322,6 +386,16 @@ class EvalRunner:
                 print(f"    {bk:22s} n={mt['n']:4d}  acc={mt['accuracy']:.1f}%  wtd={mt['weighted']:+.1f}%  prec={mt['precision']:.1f}%", flush=True)
             o = sc["overall"]
             print(f"    {'OVERALL (25%/bucket)':22s}        acc={o['accuracy']:.1f}%  wtd={o['weighted']:+.1f}%  prec={o['precision']:.1f}%", flush=True)
+        jh = s["judge_health"]
+        if jh["degraded_fields"]:
+            flag = "OK" if jh["trustworthy"] else "NOT TRUSTWORTHY"
+            print(f"  Judge health: {jh['degraded_fields']}/{s['total_fields']} fields "
+                  f"({jh['degraded_pct']}%) not adjudicated by the judge -> {flag}", flush=True)
+            print(f"    breakdown: {jh['breakdown']}", flush=True)
+            if not jh["trustworthy"]:
+                print(f"    Above the {JUDGE_DEGRADED_WARN_PCT}% threshold. Do not publish this run.", flush=True)
+        else:
+            print("  Judge health: all fields adjudicated by the judge (0 degraded)", flush=True)
         if lats:
             print(f"  Median latency: {lats[len(lats)//2]:.0f}s", flush=True)
         print(f"  Total time: {time.time() - self.t_start:.0f}s", flush=True)

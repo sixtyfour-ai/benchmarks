@@ -22,6 +22,31 @@
 
 **Weighted accuracy** = (correct − wrong) / total_fields. Penalizes hallucination.
 
+Two scoring views ship in this harness and they are not interchangeable:
+
+| view | definition | where it appears |
+|---|---|---|
+| **pooled** (published) | `(correct − wrong) / total_fields` over every field | the table above, and `weighted_formula` in `results/*.json` |
+| **macro** (25%/bucket) | equal-weight mean of the four per-bucket scores | `summary.scores.overall`, printed by `leaderboard.py` |
+
+They diverge whenever the buckets differ in size. The published table is the pooled view.
+
+**Judge health.** Every run summary carries a `judge_health` block:
+
+```json
+"judge_health": {"degraded_fields": 0, "degraded_pct": 0.0, "breakdown": {}, "trustworthy": true}
+```
+
+A field is *degraded* when the judge could not adjudicate it and the harness fell back to
+substring containment (`judge_fields` retries `JUDGE_MAX_ATTEMPTS` times first). Containment
+is a guess: it scores `"ranked 19th"` as correct against a ground truth of `"9th"`. Degraded
+fields are tagged individually and counted here, so a score is never reported without the
+figure that qualifies it. A run above `JUDGE_DEGRADED_WARN_PCT` is marked
+`"trustworthy": false` and should not be published.
+
+**Dataset pinning.** Set `PEOPLE_DATA_SHA256` to the `dataset_sha256` from the results file
+you are reproducing and `load_people()` will refuse to run against a different dataset.
+
 ## Reproducing
 
 ### 1. Setup

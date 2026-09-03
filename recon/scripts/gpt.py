@@ -4,7 +4,7 @@ Evaluate OpenAI GPT models on the RECON benchmark.
 Usage:
     python scripts/gpt.py
     python scripts/gpt.py --reasoning medium --people 5
-    python scripts/gpt.py --model gpt-5.6-sol --reasoning xhigh --concurrency 20
+    python scripts/gpt.py --model gpt-5.4 --reasoning xhigh --concurrency 20
 
 Requires: OPENAI_API_KEY in env
 """
@@ -85,7 +85,10 @@ def extract_metadata(response: dict) -> dict:
 
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="gpt-5.6-sol")
+    # Matches README.md ("default: gpt-5.4") and the published "GPT-5.4 xhigh" row.
+    # Keep these three in sync: a drifting default silently benchmarks a different
+    # model than the results table names.
+    p.add_argument("--model", default="gpt-5.4")
     p.add_argument("--reasoning", choices=["none", "low", "medium", "high", "xhigh"], default="xhigh")
     p.add_argument("--people", type=int, default=None)
     p.add_argument("--concurrency", type=int, default=10)
