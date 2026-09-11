@@ -6,21 +6,26 @@
 
 ## Results
 
-| Provider | Configuration | Accuracy | Weighted Accuracy | Precision | Latency P50 |
+| Provider | Configuration | Accuracy | Weighted Accuracy | Precision | Correct / Wrong / Missing |
 |----------|--------------|----------|-------------------|-----------|-------------|
-| Sixtyfour | High | 71.8% | +56.6% | 82.6% | 459s |
-| Sixtyfour | Medium | 58.8% | +45.3% | 81.4% | 223s |
-| Parallel | Ultra 8x | 44.6% | +31.3% | 77.1% | 678s |
-| Sixtyfour | Low | 42.4% | +29.4% | 76.5% | 230s |
-| Parallel | Ultra 2x | 42.6% | +28.8% | 75.5% | 834s |
-| Parallel | Ultra | 44.4% | +23.9% | 68.5% | 589s |
-| OpenAI | GPT-5.4 xhigh | 29.4% | +23.2% | 82.5% | 180s |
-| Google | Gemini 3.1 Pro | 26.9% | +16.6% | 72.3% | 87s |
-| xAI | Grok 4.3 | 24.5% | +10.1% | 63.0% | 15s |
-| Exa | Search Deep | 12.7% | −5.4% | 41.3% | 4s |
-| Exa | Search Deep Reasoning | 19.7% | −10.4% | 39.6% | 13s |
+| Sixtyfour | High | 67.7% | +54.3% | 83.5% | 348 / 69 / 97 |
+| Sixtyfour | Medium | 56.0% | +44.7% | 83.2% | 288 / 58 / 168 |
+| Parallel | Ultra 2x | 54.3% | +41.1% | 80.4% | 279 / 68 / 167 |
+| Parallel | Ultra 8x | 52.1% | +37.5% | 78.1% | 268 / 75 / 171 |
+| xAI | Grok 4.20-ma | 51.6% | +36.2% | 77.0% | 265 / 79 / 170 |
+| xAI | Grok 4.6 | 50.8% | +36.0% | 77.4% | 261 / 76 / 177 |
+| xAI | Grok 4.3 | 44.9% | +30.9% | 76.2% | 231 / 72 / 211 |
+| Sixtyfour | Low | 49.8% | +28.8% | 70.3% | 256 / 108 / 150 |
+| Parallel | Ultra | 43.4% | +27.2% | 72.9% | 223 / 83 / 208 |
+| Exa | agent xhigh | 37.7% | +23.9% | 73.2% | 194 / 71 / 249 |
+| OpenAI | GPT-5.6-sol xhigh | 31.3% | +20.4% | 74.2% | 161 / 56 / 297 |
+| Google | Gemini 3.1 Pro (high) | 23.2% | +13.4% | 70.4% | 119 / 50 / 345 |
+| DeepSeek | V4 Pro (high) | 12.6% | +9.3% | 79.3% | 65 / 17 / 432 |
+| Anthropic | Claude Haiku 4.5 | 7.6% | +1.6% | 55.7% | 39 / 31 / 444 |
 
-**Weighted accuracy** = (correct − wrong) / total_fields. Penalizes hallucination.
+**Weighted accuracy** = (correct − wrong) / total_fields. Penalizes incorrect answers.
+
+[Full results](results/sixtyfour_benchmark_results.json).
 
 ## Reproducing
 
@@ -67,8 +72,8 @@ python scripts/sixtyfour.py --tier medium
 python scripts/sixtyfour.py --tier high          # requires access — contact sales
 
 # OpenAI GPT
-python scripts/gpt.py                            # default: gpt-5.4, reasoning=xhigh
-python scripts/gpt.py --model gpt-5.4 --reasoning high
+python scripts/gpt.py                            # default: gpt-5.6-sol, reasoning=xhigh
+python scripts/gpt.py --model gpt-5.6-sol --reasoning high
 
 # Native provider web-research harnesses
 python scripts/kimi.py --reasoning max
@@ -84,8 +89,8 @@ python scripts/grok.py --model 4.3               # Grok 4.3 (RECON config)
 python scripts/grok.py --model 4.1-fast
 
 # Exa
-python scripts/exa.py                            # default: deep-reasoning
-python scripts/exa.py --type deep
+python scripts/exa.py                            # default: agent, effort=xhigh
+python scripts/exa.py --mode search --type deep
 
 # Parallel
 python scripts/parallel.py --processor ultra     # default
@@ -95,20 +100,19 @@ python scripts/parallel.py --processor ultra8x   # supports --resume for crash r
 Kimi and GLM use bounded model-driven search loops; customize their budget with
 `--max-search-rounds N`. DeepSeek executes and bounds web search server-side.
 
-### 5. RECON-exact configurations
+### 5. RECON configurations
 
-These are the exact configs used to produce the published RECON numbers:
+Commands for configurations supported by these scripts:
 
 | Provider | Script | Command |
 |----------|--------|---------|
 | Sixtyfour Low | `sixtyfour.py` | `--tier low` |
 | Sixtyfour Medium | `sixtyfour.py` | `--tier medium` |
 | Sixtyfour High | `sixtyfour.py` | `--tier high` |
-| GPT-5.4 xhigh | `gpt.py` | `--model gpt-5.4 --reasoning xhigh` |
+| GPT-5.4 xhigh | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
 | Gemini 3.1 Pro | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
 | Grok 4.3 | `grok.py` | `--model 4.3` |
-| Exa Deep | `exa.py` | `--type deep` |
-| Exa Deep Reasoning | `exa.py` | `--type deep-reasoning` |
+| Exa agent xhigh | `exa.py` | `--mode agent --effort xhigh` |
 | Parallel Ultra | `parallel.py` | `--processor ultra` |
 | Parallel Ultra 2x | `parallel.py` | `--processor ultra2x` |
 | Parallel Ultra 8x | `parallel.py` | `--processor ultra8x` |
@@ -121,11 +125,11 @@ Results are saved to `results/runs/` as JSON with per-person verdicts:
 {
   "config": { ... },
   "summary": {
-    "correct": 369,
-    "wrong": 78,
-    "missing": 67,
+    "correct": 348,
+    "wrong": 69,
+    "missing": 97,
     "total_fields": 514,
-    "accuracy": 71.8
+    "accuracy": 67.7
   },
   "results": [
     {

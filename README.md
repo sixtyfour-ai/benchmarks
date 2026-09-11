@@ -34,6 +34,15 @@ python scripts/parallel.py
 
 export SIXTYFOUR_API_KEY="your-key"
 python scripts/sixtyfour.py
+
+export MOONSHOT_API_KEY="your-key"
+python scripts/kimi.py
+
+export DEEPSEEK_API_KEY="your-key"
+python scripts/deepseek.py
+
+export ZAI_API_KEY="your-key"
+python scripts/glm.py
 ```
 
 ## Requirements
