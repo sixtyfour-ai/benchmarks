@@ -1,6 +1,6 @@
 # RECON Benchmark
 
-**RE**search & **CON**firmation — evaluating AI systems on verified people research.
+A benchmark for evaluating AI systems on verified people research.
 
 140 real people, 514 verified fields, binary judging (correct / wrong / missing).
 
