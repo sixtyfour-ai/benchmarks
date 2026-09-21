@@ -84,6 +84,7 @@ async def call_kimi(
         }
         if can_search:
             request_payload["tools"] = [WEB_SEARCH_TOOL]
+            request_payload["tool_choice"] = "required" if turn == 0 else "auto"
         else:
             request_payload["tool_choice"] = "none"
             request_payload["response_format"] = {
@@ -165,6 +166,7 @@ async def call_kimi(
             "web_searches": search_calls,
             "search_results": search_results,
             "search_backend": "moonshot/search_pro",
+            "search_policy": "first_turn_required_then_auto",
             "provider_status": choice.get("finish_reason"),
             "terminal_format_valid": terminal_format_valid,
             "terminal_repaired": terminal_repair,

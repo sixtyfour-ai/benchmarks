@@ -201,6 +201,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("response_format", requests[0]["json"])
         self.assertEqual(requests[0]["json"]["tools"], [kimi.WEB_SEARCH_TOOL])
+        self.assertEqual(requests[0]["json"]["tool_choice"], "required")
+        self.assertEqual(requests[2]["json"]["tool_choice"], "none")
+        self.assertEqual(metadata["search_policy"], "first_turn_required_then_auto")
         response_format = requests[2]["json"]["response_format"]
         self.assertTrue(response_format["json_schema"]["strict"])
         self.assertEqual(
@@ -275,6 +278,29 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                         await kimi.call_kimi(object(), ITEM, api_key="secret", model="kimi-k3",
                                              reasoning="max", max_search_rounds=10)
                 self.assertEqual(fake_post.await_count, expected_calls)
+
+    async def test_kimi_requires_only_first_research_turn(self):
+        message = {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function", "function": {
+                "name": "web_search", "arguments": '{"query":"Ada Example"}'
+            }
+        }]}
+        final = {"role": "assistant", "content": '{"employer":"","hometown":""}'}
+        fake_post = AsyncMock(side_effect=[
+            FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": message}]}),
+            FakeResponse({"search_results": []}),
+            FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]}),
+            FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]}),
+        ])
+        with patch.object(kimi, "post_with_retry", fake_post):
+            await kimi.call_kimi(object(), ITEM, api_key="secret", model="kimi-k3",
+                                 reasoning="max", max_search_rounds=10)
+        chat_requests = [call.kwargs["json"] for call in fake_post.await_args_list
+                         if call.args[1] == kimi.ENDPOINT]
+        self.assertEqual([request["tool_choice"] for request in chat_requests],
+                         ["required", "auto", "none"])
+        self.assertNotIn("response_format", chat_requests[1])
+        self.assertIn("response_format", chat_requests[2])
 
     async def test_deepseek_repairs_prose_with_tool_free_compilation(self):
         research_output = [
