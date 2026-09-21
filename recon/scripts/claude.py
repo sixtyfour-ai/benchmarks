@@ -26,6 +26,27 @@ class ClaudeRunError(RuntimeError):
         self.responses = responses
 
 
+def context_options(model, enabled=True):
+    """Use provider-managed context; never rewrite local history or prompts."""
+    if not enabled:
+        return {}
+    if model in {"claude-opus-5", "claude-sonnet-5", "claude-opus-4-6", "claude-sonnet-4-6"}:
+        return {
+            "betas": ["compact-2026-01-12"],
+            "context_management": {"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 150000}}]},
+        }
+    # Haiku supports context editing, but not native summary compaction.
+    return {
+        "betas": ["context-management-2025-06-27"],
+        "context_management": {"edits": [{"type": "clear_tool_uses_20250919", "trigger": {"type": "input_tokens", "value": 100000}, "keep": {"type": "tool_uses", "value": 3}}]},
+    }
+
+
+def token_usage(responses, key):
+    # Compaction billing is omitted from top-level usage; iterations includes it.
+    return sum(sum(part.get(key, 0) for part in (r.get("usage", {}).get("iterations") or [r.get("usage", {})])) for r in responses)
+
+
 def tool_definitions():
     # These versions support Haiku 4.5 as well as the larger models.
     return [
@@ -39,7 +60,8 @@ async def stream_message(client, request, attempts=4):
     """Retry interrupted streams without committing partial assistant content."""
     for attempt in range(attempts):
         try:
-            async with client.messages.stream(**request) as stream:
+            messages_api = client.beta.messages if request.get("betas") else client.messages
+            async with messages_api.stream(**request) as stream:
                 message = await stream.get_final_message()
             if message.stop_reason is None:
                 raise RuntimeError("stream ended without a terminal stop reason")
@@ -68,7 +90,7 @@ def extract_output(response, fields):
 
 
 async def call_api(client, item, *, model, effort=None, max_tokens=64000,
-                   max_continuations=12, attempts=4):
+                   max_continuations=12, attempts=4, context_management=True):
     if "haiku" in model and effort is not None:
         raise ValueError("Haiku does not support the effort parameter; omit --effort")
     request = {
@@ -76,6 +98,7 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": build_user_prompt(item)}],
         "tools": tool_definitions(),
+        **context_options(model, context_management),
     }
     if effort is not None:
         request["output_config"] = {"effort": effort}
@@ -98,8 +121,10 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                 # This is an API signal, not a semantic classifier of prose.
                 "api_refusal": response.get("stop_reason") == "refusal",
                 "continuations": continuation, "transport_retries": retries,
-                "input_tokens": sum(r.get("usage", {}).get("input_tokens", 0) for r in responses),
-                "output_tokens": sum(r.get("usage", {}).get("output_tokens", 0) for r in responses),
+                "input_tokens": token_usage(responses, "input_tokens"),
+                "output_tokens": token_usage(responses, "output_tokens"),
+                "context_edits": [r.get("context_management", {}) for r in responses],
+                "compactions": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "compaction"),
                 "web_searches": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "server_tool_use" and b.get("name") == "web_search"),
                 "responses": responses,
             }
@@ -122,11 +147,12 @@ async def main():
     parser.add_argument("--max-continuations", type=positive_int, default=12)
     parser.add_argument("--attempts", type=positive_int, default=4)
     parser.add_argument("--timeout", type=positive_int, default=3600)
+    parser.add_argument("--context-management", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if "haiku" in args.model and args.effort:
         parser.error("Haiku does not support --effort")
     people = load_people(args.people)
-    config = {**vars(args), "tools": tool_definitions(), "anthropic_sdk": anthropic.__version__}
+    config = {**vars(args), "context_options": context_options(args.model, args.context_management), "tools": tool_definitions(), "anthropic_sdk": anthropic.__version__}
     runner = EvalRunner(f"claude_{args.model}_{args.effort or 'default'}", config)
     semaphore = asyncio.Semaphore(args.concurrency)
     async with anthropic.AsyncAnthropic(max_retries=0, timeout=httpx.Timeout(300, connect=30)) as client:
@@ -135,7 +161,7 @@ async def main():
                 started = time.monotonic()
                 try:
                     async with asyncio.timeout(args.timeout):
-                        output, metadata = await call_api(client, item, model=args.model, effort=args.effort, max_tokens=args.max_tokens, max_continuations=args.max_continuations, attempts=args.attempts)
+                        output, metadata = await call_api(client, item, model=args.model, effort=args.effort, max_tokens=args.max_tokens, max_continuations=args.max_continuations, attempts=args.attempts, context_management=args.context_management)
                     await runner.record(item, output, time.monotonic() - started, metadata)
                 except Exception as error:
                     metadata = {"responses": error.responses} if isinstance(error, ClaudeRunError) else None

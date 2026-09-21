@@ -19,9 +19,20 @@ def reply(stop="end_turn", text='{"employer":"Acme"}', **extra):
 
 
 class ClaudeTests(unittest.IsolatedAsyncioTestCase):
+    def test_context_strategy_matches_model_support(self):
+        self.assertEqual(claude.context_options("claude-haiku-4-5-20251001")["context_management"]["edits"][0]["type"], "clear_tool_uses_20250919")
+        self.assertEqual(claude.context_options("claude-opus-5")["context_management"]["edits"][0]["type"], "compact_20260112")
+        self.assertEqual(claude.context_options("claude-sonnet-5", False), {})
+
+    def test_token_usage_includes_compaction_without_double_counting(self):
+        response = {"usage": {"input_tokens": 12, "output_tokens": 3, "iterations": [{"type": "compaction", "input_tokens": 100, "output_tokens": 10}, {"type": "message", "input_tokens": 12, "output_tokens": 3}]}}
+        self.assertEqual(claude.token_usage([response], "input_tokens"), 112)
+        self.assertEqual(claude.token_usage([response], "output_tokens"), 13)
+
     async def test_pause_preserves_container_and_entire_content(self):
         calls = []
         pause = reply("pause_turn", container={"id": "container_123"})
+        pause["content"].insert(0, {"type": "compaction", "content": "Retained research summary"})
         pause["content"].append({"type": "server_tool_use", "id": "srv_1", "name": "bash_code_execution", "input": {"command": "echo ok"}})
         responses = [pause, reply()]
         async def stream(client, request, attempts):
@@ -35,6 +46,8 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0]["tools"], calls[1]["tools"])
         self.assertNotIn("SECRET_REFERENCE", json.dumps(calls))
         self.assertEqual(meta["continuations"], 1)
+        self.assertEqual(meta["compactions"], 1)
+        self.assertEqual(calls[0]["context_management"], calls[1]["context_management"])
 
     async def test_continuation_limit_is_error_not_blank(self):
         with patch.object(claude, "stream_message", AsyncMock(return_value=(reply("pause_turn"), 0))):
@@ -79,7 +92,7 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
             {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": '{"employer":'}},
             {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": '"Acme"}'}},
             {"type": "content_block_stop", "index": 0},
-            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 8}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 8}, "context_management": {"applied_edits": [{"type": "clear_tool_uses_20250919", "cleared_tool_uses": 4, "cleared_input_tokens": 50000}]}},
             {"type": "message_stop"},
         ]
         payload = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
@@ -98,9 +111,10 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Bytes(interrupt=attempts == 1))
         async with anthropic.AsyncAnthropic(api_key="test", max_retries=0, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))) as client:
             with patch.object(claude.asyncio, "sleep", AsyncMock()):
-                result, retries = await claude.stream_message(client, {"model": "claude-opus-5", "max_tokens": 100, "messages": [{"role": "user", "content": "test"}]})
+                result, retries = await claude.stream_message(client, {"model": "claude-haiku-4-5-20251001", "max_tokens": 100, "messages": [{"role": "user", "content": "test"}], **claude.context_options("claude-haiku-4-5-20251001")})
         self.assertEqual(retries, 1)
         self.assertEqual(claude.extract_output(result, ITEM["fields"]), {"employer": "Acme"})
+        self.assertEqual(result["context_management"]["applied_edits"][0]["cleared_tool_uses"], 4)
 
 
 if __name__ == "__main__":
