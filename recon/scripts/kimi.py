@@ -69,6 +69,7 @@ async def call_kimi(
     search_calls = 0
     search_results = 0
     search_errors = 0
+    search_error_types: dict[str, int] = {}
     terminal_repair = False
     compile_only = False
 
@@ -142,6 +143,8 @@ async def call_kimi(
                     if exc.response.status_code not in RETRYABLE_SEARCH_STATUS:
                         raise
                     search_errors += 1
+                    error_type = f"http_{exc.response.status_code}"
+                    search_error_types[error_type] = search_error_types.get(error_type, 0) + 1
                     messages.append(
                         {
                             "role": "tool",
@@ -153,8 +156,10 @@ async def call_kimi(
                         }
                     )
                     continue
-                except (httpx.TransportError, httpx.TimeoutException):
+                except (httpx.TransportError, httpx.TimeoutException) as exc:
                     search_errors += 1
+                    error_type = "timeout" if isinstance(exc, httpx.TimeoutException) else type(exc).__name__
+                    search_error_types[error_type] = search_error_types.get(error_type, 0) + 1
                     messages.append(
                         {
                             "role": "tool",
@@ -199,6 +204,7 @@ async def call_kimi(
             "web_searches": search_calls,
             "search_results": search_results,
             "search_errors": search_errors,
+            "search_error_types": search_error_types,
             "search_backend": "moonshot/search_pro",
             "search_policy": "first_turn_required_then_auto",
             "provider_status": choice.get("finish_reason"),

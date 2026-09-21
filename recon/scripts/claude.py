@@ -96,6 +96,25 @@ def extract_output(response, fields):
     return output
 
 
+def result_metadata(responses, *, continuations, retries, terminal_status,
+                    terminal_format_valid, api_refusal=False,
+                    continuation_budget_exhausted=False):
+    return {
+        # These are API/runtime signals, not semantic classifiers of prose.
+        "api_refusal": api_refusal,
+        "continuation_budget_exhausted": continuation_budget_exhausted,
+        "terminal_format_valid": terminal_format_valid,
+        "terminal_status": terminal_status,
+        "continuations": continuations, "transport_retries": retries,
+        "input_tokens": token_usage(responses, "input_tokens"),
+        "output_tokens": token_usage(responses, "output_tokens"),
+        "context_edits": [r.get("context_management", {}) for r in responses],
+        "compactions": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "compaction"),
+        "web_searches": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "server_tool_use" and b.get("name") == "web_search"),
+        "responses": responses,
+    }
+
+
 async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                    max_continuations=12, attempts=4, context_management=True):
     if "haiku" in model and effort is not None:
@@ -128,21 +147,20 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                 format_valid = False
             except ValueError as error:
                 raise ClaudeRunError(str(error), responses) from error
-            return output, {
-                # This is an API signal, not a semantic classifier of prose.
-                "api_refusal": response.get("stop_reason") == "refusal",
-                "terminal_format_valid": format_valid,
-                "terminal_status": "api_refusal" if response.get("stop_reason") == "refusal" else ("structured_answer" if format_valid else "unstructured_nonanswer"),
-                "continuations": continuation, "transport_retries": retries,
-                "input_tokens": token_usage(responses, "input_tokens"),
-                "output_tokens": token_usage(responses, "output_tokens"),
-                "context_edits": [r.get("context_management", {}) for r in responses],
-                "compactions": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "compaction"),
-                "web_searches": sum(1 for r in responses for b in r.get("content", []) if b.get("type") == "server_tool_use" and b.get("name") == "web_search"),
-                "responses": responses,
-            }
+            api_refusal = response.get("stop_reason") == "refusal"
+            return output, result_metadata(
+                responses, continuations=continuation, retries=retries,
+                api_refusal=api_refusal, terminal_format_valid=format_valid,
+                terminal_status="api_refusal" if api_refusal else ("structured_answer" if format_valid else "unstructured_nonanswer"),
+            )
         if continuation == max_continuations:
-            raise ClaudeRunError(f"pause_turn continuation limit reached ({max_continuations})", responses)
+            output = {field["fieldname"]: "" for field in item["fields"]}
+            return output, result_metadata(
+                responses, continuations=continuation, retries=retries,
+                terminal_status="continuation_budget_exhausted",
+                terminal_format_valid=False,
+                continuation_budget_exhausted=True,
+            )
         request["messages"].append({"role": "assistant", "content": response["content"]})
         container_id = response.get("container", {}).get("id")
         if container_id:

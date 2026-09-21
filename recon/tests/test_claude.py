@@ -49,10 +49,16 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["compactions"], 1)
         self.assertEqual(calls[0]["context_management"], calls[1]["context_management"])
 
-    async def test_continuation_limit_is_error_not_blank(self):
+    async def test_continuation_limit_is_explicit_scored_blank(self):
         with patch.object(claude, "stream_message", AsyncMock(return_value=(reply("pause_turn"), 0))):
-            with self.assertRaisesRegex(RuntimeError, "continuation limit"):
-                await claude.call_api(None, ITEM, model="claude-opus-5", max_continuations=1)
+            output, metadata = await claude.call_api(None, ITEM, model="claude-opus-5", max_continuations=1)
+        self.assertEqual(output, {"employer": ""})
+        self.assertEqual(metadata["terminal_status"], "continuation_budget_exhausted")
+        self.assertTrue(metadata["continuation_budget_exhausted"])
+        self.assertFalse(metadata["api_refusal"])
+        self.assertFalse(metadata["terminal_format_valid"])
+        self.assertEqual(metadata["continuations"], 1)
+        self.assertEqual(len(metadata["responses"]), 2)
 
     async def test_refusal_is_valid_missing(self):
         response = reply("refusal", "Declined")

@@ -1,9 +1,7 @@
 import asyncio
-import io
 import json
 import sys
 import unittest
-from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -106,16 +104,15 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             ):
                 common.positive_int(value)
 
-    def test_search_round_limit_is_only_on_client_search_runners(self):
+    def test_search_round_limit_is_available_on_client_search_runners(self):
         self.assertEqual(kimi.CONFIG.default_search_rounds, 10)
         self.assertEqual(glm.CONFIG.default_search_rounds, 10)
-        self.assertIsNone(deepseek.CONFIG.default_search_rounds)
+        self.assertEqual(deepseek.CONFIG.default_search_rounds, 10)
 
         with patch.object(sys, "argv", ["kimi.py", "--max-search-rounds", "4"]):
             self.assertEqual(common.parse_args(kimi.CONFIG).max_search_rounds, 4)
         with patch.object(sys, "argv", ["deepseek.py", "--max-search-rounds", "4"]):
-            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                common.parse_args(deepseek.CONFIG)
+            self.assertEqual(common.parse_args(deepseek.CONFIG).max_search_rounds, 4)
 
     def test_extracts_embedded_json_without_interpreting_prose(self):
         parsed = common.json_content(
@@ -198,6 +195,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["search_backend"], "moonshot/search_pro")
         self.assertEqual(metadata["search_results"], 1)
         self.assertEqual(metadata["search_errors"], 0)
+        self.assertEqual(metadata["search_error_types"], {})
         self.assertEqual(requests[2]["json"]["messages"][2], assistant)
         self.assertEqual(
             json.loads(requests[2]["json"]["messages"][3]["content"]),
@@ -219,11 +217,11 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             "budget is exhausted", requests[2]["json"]["messages"][-1]["content"]
         )
 
-    async def test_deepseek_uses_server_side_search_and_requested_reasoning(self):
+    async def test_deepseek_pro_uses_server_side_search_and_requested_reasoning(self):
         response = FakeResponse(
             {
                 "status": "completed",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-v4-pro",
                 "usage": {
                     "input_tokens": 100,
                     "output_tokens": 20,
@@ -249,18 +247,92 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 object(),
                 ITEM,
                 api_key="secret",
-                model="deepseek-v4-flash",
-                reasoning="none",
-                max_search_rounds=None,
+                model="deepseek-v4-pro",
+                reasoning="high",
+                max_search_rounds=10,
             )
 
         self.assertEqual(output["hometown"], "London")
         self.assertEqual(metadata["web_searches"], 1)
         body = fake_post.await_args.kwargs["json"]
-        self.assertEqual(body["reasoning"], {"effort": "none"})
+        self.assertEqual(body["reasoning"], {"effort": "high"})
         self.assertEqual(body["tools"], [{"type": "web_search"}])
         self.assertEqual(body["text"]["format"]["type"], "json_schema")
+        self.assertEqual(metadata["search_backend"], "deepseek/server_web_search")
         self.assertFalse(metadata["terminal_repaired"])
+
+    async def test_deepseek_flash_round_trips_function_search_through_exa(self):
+        function_call = {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "web_search",
+            "arguments": '{"query":"Ada Example Acme"}',
+        }
+        over_budget_call = {
+            "type": "function_call",
+            "call_id": "call_2",
+            "name": "web_search",
+            "arguments": '{"query":"Ada Example hometown"}',
+        }
+        responses = [
+            FakeResponse({
+                "status": "completed",
+                "model": "deepseek-flash",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "output": [
+                    {"type": "reasoning", "id": "r1", "summary": []},
+                    function_call,
+                    over_budget_call,
+                ],
+            }),
+            FakeResponse({"results": [{
+                "title": "Ada at Acme",
+                "url": "https://example.test/ada",
+                "text": "Ada works at Acme.",
+            }]}),
+            FakeResponse({
+                "status": "completed",
+                "model": "deepseek-flash",
+                "usage": {"input_tokens": 20, "output_tokens": 8},
+                "output_text": '{"employer":"Acme","hometown":""}',
+                "output": [],
+            }),
+        ]
+        fake_post = AsyncMock(side_effect=responses)
+        with patch.object(deepseek, "post_with_retry", fake_post), patch.dict(
+            deepseek.os.environ, {"EXA_API_KEY": "exa-secret"}
+        ):
+            output, metadata = await deepseek.call_deepseek(
+                object(), ITEM, api_key="secret", model="deepseek-v4-flash",
+                reasoning="high", max_search_rounds=1,
+            )
+
+        self.assertEqual(output, {"employer": "Acme", "hometown": ""})
+        first = fake_post.await_args_list[0].kwargs["json"]
+        self.assertEqual(first["tools"], [deepseek.WEB_SEARCH_FUNCTION])
+        self.assertEqual(first["tool_choice"], "auto")
+        self.assertNotIn("text", first)
+        self.assertEqual(fake_post.await_args_list[1].args[1], deepseek.EXA_SEARCH_ENDPOINT)
+        self.assertEqual(fake_post.await_args_list[1].kwargs["headers"]["x-api-key"], "exa-secret")
+        self.assertEqual(fake_post.await_args_list[1].kwargs["json"]["numResults"], deepseek.EXA_RESULTS_PER_SEARCH)
+        self.assertEqual(
+            fake_post.await_args_list[1].kwargs["json"]["contents"],
+            {"text": {"maxCharacters": deepseek.EXA_TEXT_CHARACTERS}},
+        )
+        terminal = fake_post.await_args_list[2].kwargs["json"]
+        self.assertEqual(terminal["tool_choice"], "none")
+        self.assertNotIn("tools", terminal)
+        tool_output = next(item for item in terminal["input"] if item.get("type") == "function_call_output")
+        self.assertEqual(json.loads(tool_output["output"])[0]["url"], "https://example.test/ada")
+        budget_output = next(
+            item for item in terminal["input"]
+            if item.get("type") == "function_call_output" and item.get("call_id") == "call_2"
+        )
+        self.assertIn("budget exhausted", json.loads(budget_output["output"])["error"].lower())
+        self.assertEqual(metadata["search_backend"], "exa/search")
+        self.assertEqual(metadata["web_searches"], 1)
+        self.assertEqual(metadata["search_results"], 1)
+        self.assertEqual(metadata["search_policy"], "auto_in_thinking_mode")
 
     async def test_kimi_rejects_invalid_search_arguments_and_response(self):
         for arguments, search_response, expected_calls in (
@@ -337,6 +409,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["employer"], "Acme")
         self.assertEqual(metadata["web_searches"], 2)
         self.assertEqual(metadata["search_errors"], 1)
+        self.assertEqual(metadata["search_error_types"], {"http_502": 1})
         chat_requests = [call.kwargs["json"] for call in fake_post.await_args_list
                          if call.args[1] == kimi.ENDPOINT]
         error_result = next(
@@ -364,7 +437,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             FakeResponse(
                 {
                     "status": "completed",
-                    "model": "deepseek-v4-flash",
+                    "model": "deepseek-v4-pro",
                     "usage": {"input_tokens": 100, "output_tokens": 20},
                     "output": research_output,
                 }
@@ -372,7 +445,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             FakeResponse(
                 {
                     "status": "completed",
-                    "model": "deepseek-v4-flash",
+                    "model": "deepseek-v4-pro",
                     "usage": {"input_tokens": 40, "output_tokens": 10},
                     "output_text": '{"employer":"Acme","hometown":""}',
                     "output": [],
@@ -390,9 +463,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 object(),
                 ITEM,
                 api_key="secret",
-                model="deepseek-v4-flash",
-                reasoning="none",
-                max_search_rounds=None,
+                model="deepseek-v4-pro",
+                reasoning="high",
+                max_search_rounds=10,
             )
 
         self.assertEqual(output, {"employer": "Acme", "hometown": ""})
@@ -422,7 +495,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(deepseek, "post_with_retry", fake_post):
                     call = deepseek.call_deepseek(
                         object(), ITEM, api_key="secret", model="deepseek-v4-pro",
-                        reasoning="high", max_search_rounds=None,
+                        reasoning="high", max_search_rounds=10,
                     )
                     if terminal:
                         output, metadata = await call
