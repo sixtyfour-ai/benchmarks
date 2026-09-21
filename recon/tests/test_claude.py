@@ -56,6 +56,22 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Haiku"):
             await claude.call_api(None, ITEM, model="claude-haiku-4-5-20251001", effort="high")
 
+    async def test_prose_failure_retains_response_without_repair(self):
+        response = reply(text="I cannot provide this information.")
+        mocked = AsyncMock(return_value=(response, 0))
+        with patch.object(claude, "stream_message", mocked):
+            with self.assertRaises(claude.ClaudeRunError) as raised:
+                await claude.call_api(None, ITEM, model="claude-sonnet-5")
+        self.assertEqual(raised.exception.responses, [response])
+        self.assertEqual(mocked.await_count, 1)
+
+    async def test_continuation_failure_retains_earlier_responses(self):
+        pause = reply("pause_turn")
+        with patch.object(claude, "stream_message", AsyncMock(side_effect=[(pause, 0), RuntimeError("stream failed")])):
+            with self.assertRaises(claude.ClaudeRunError) as raised:
+                await claude.call_api(None, ITEM, model="claude-opus-5")
+        self.assertEqual(raised.exception.responses, [pause])
+
     async def test_actual_sdk_assembles_fragmented_stream(self):
         events = [
             {"type": "message_start", "message": {"id": "msg_test", "type": "message", "role": "assistant", "model": "claude-opus-5", "content": [], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 0}}},

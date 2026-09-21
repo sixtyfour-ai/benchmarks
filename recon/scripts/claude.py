@@ -18,6 +18,14 @@ from judge import EvalRunner, load_people
 from native_model_common import SYSTEM_PROMPT, build_user_prompt, json_content, positive_int
 
 
+class ClaudeRunError(RuntimeError):
+    """Execution failure retaining completed native responses for diagnosis."""
+
+    def __init__(self, message, responses):
+        super().__init__(message)
+        self.responses = responses
+
+
 def tool_definitions():
     # These versions support Haiku 4.5 as well as the larger models.
     return [
@@ -75,13 +83,20 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
     responses = []
     retries = 0
     for continuation in range(max_continuations + 1):
-        response, retried = await stream_message(client, request, attempts)
+        try:
+            response, retried = await stream_message(client, request, attempts)
+        except Exception as error:
+            raise ClaudeRunError(f"{type(error).__name__}: {error}", responses) from error
         responses.append(response)
         retries += retried
         if response.get("stop_reason") != "pause_turn":
-            output = extract_output(response, item["fields"])
+            try:
+                output = extract_output(response, item["fields"])
+            except ValueError as error:
+                raise ClaudeRunError(str(error), responses) from error
             return output, {
-                "refused": response.get("stop_reason") == "refusal",
+                # This is an API signal, not a semantic classifier of prose.
+                "api_refusal": response.get("stop_reason") == "refusal",
                 "continuations": continuation, "transport_retries": retries,
                 "input_tokens": sum(r.get("usage", {}).get("input_tokens", 0) for r in responses),
                 "output_tokens": sum(r.get("usage", {}).get("output_tokens", 0) for r in responses),
@@ -89,7 +104,7 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                 "responses": responses,
             }
         if continuation == max_continuations:
-            raise RuntimeError(f"pause_turn continuation limit reached ({max_continuations})")
+            raise ClaudeRunError(f"pause_turn continuation limit reached ({max_continuations})", responses)
         request["messages"].append({"role": "assistant", "content": response["content"]})
         container_id = response.get("container", {}).get("id")
         if container_id:
@@ -123,7 +138,8 @@ async def main():
                         output, metadata = await call_api(client, item, model=args.model, effort=args.effort, max_tokens=args.max_tokens, max_continuations=args.max_continuations, attempts=args.attempts)
                     await runner.record(item, output, time.monotonic() - started, metadata)
                 except Exception as error:
-                    await runner.record_error(item, time.monotonic() - started, RuntimeError(f"{type(error).__name__}: {error}"))
+                    metadata = {"responses": error.responses} if isinstance(error, ClaudeRunError) else None
+                    await runner.record_error(item, time.monotonic() - started, RuntimeError(f"{type(error).__name__}: {error}"), metadata=metadata)
         await asyncio.gather(*(process(item) for item in people))
     runner.summary()
 
