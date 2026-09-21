@@ -85,6 +85,20 @@ class JudgeTests(unittest.IsolatedAsyncioTestCase):
             await runner.oai.close()
             await other.oai.close()
 
+    async def test_provider_error_metadata_preserved_without_overriding_status(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"OPENAI_API_KEY": "test", "RECON_RUNS_DIR": directory}):
+            runner = judge.EvalRunner("test", {})
+            result = await runner.record_error(ITEM, 3, RuntimeError("provider failed"), {
+                "provider_response": {"stop_reason": "max_tokens"},
+                "error_type": "incorrect_override", "correct": 99,
+            })
+            saved = json.loads(runner.out_path.read_text())["results"][0]
+            self.assertEqual(saved, result)
+            self.assertEqual(saved["provider_response"], {"stop_reason": "max_tokens"})
+            self.assertEqual(saved["error_type"], "provider_error")
+            self.assertEqual(saved["correct"], 0)
+            await runner.oai.close()
+
 
 if __name__ == "__main__":
     unittest.main()

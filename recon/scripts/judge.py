@@ -270,11 +270,12 @@ class EvalRunner:
         self._save()
         return result
 
-    async def record_error(self, item: dict, elapsed: float, error: Exception) -> dict:
+    async def record_error(self, item: dict, elapsed: float, error: Exception, metadata: dict | None = None) -> dict:
         label = (item.get("name") or item["person_info"])[:30]
         print(f"  {label:30s} ERROR [{elapsed:.0f}s]: {str(error)[:100]}", flush=True)
 
         result = {
+            **(metadata or {}),
             "person": item["person_info"],
             "name": item.get("name", ""),
             "elapsed": round(elapsed, 1),
