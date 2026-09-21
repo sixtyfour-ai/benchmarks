@@ -23,6 +23,10 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 RUNS_DIR = RESULTS_DIR / "runs"
 
+
+class JudgmentError(RuntimeError):
+    """A judge failure, not a verdict about the researched answer."""
+
 JUDGE_PROMPT = """You are an eval judge comparing enrichment results against verified ground truth.
 For each field, decide: CORRECT or WRONG. No partial credit.
 
@@ -158,17 +162,19 @@ async def judge_fields(
         lines.append(f"Field: {field}\n  Expected: {exp}\n  Actual: {act}")
     user_msg = f"Person: {person}\n\n" + "\n\n".join(lines)
 
-    async with sem:
+    last_error = None
+    for attempt in range(3):
         try:
-            resp = await oai.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": JUDGE_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0,
-                max_tokens=2048,
-            )
+            async with sem:
+                resp = await oai.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {"role": "system", "content": JUDGE_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    temperature=0,
+                    max_tokens=2048,
+                )
             raw = resp.choices[0].message.content.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -176,22 +182,26 @@ async def judge_fields(
                     raw = raw[:-3]
                 raw = raw.strip()
             llm_verdicts = json.loads(raw)
+            if not isinstance(llm_verdicts, dict):
+                raise ValueError("Judge returned a non-object")
+            for field in to_judge:
+                v = llm_verdicts.get(field)
+                if (not isinstance(v, dict)
+                        or not isinstance(v.get("match"), str)
+                        or v["match"].lower() not in ("correct", "wrong")
+                        or not isinstance(v.get("reason", ""), str)):
+                    raise ValueError("Judge returned an incomplete or invalid verdict")
+            break
         except Exception as e:
-            llm_verdicts = {}
-            for field, (act, exp) in to_judge.items():
-                if any(v.strip() and (v.strip().lower() in act.lower() or act.lower() in v.strip().lower())
-                       for v in exp.split(" | ")):
-                    llm_verdicts[field] = {"match": "correct", "reason": "fallback: substring"}
-                else:
-                    llm_verdicts[field] = {"match": "wrong", "reason": f"judge error: {e}"}
+            last_error = e
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+    else:
+        raise JudgmentError("Judge failed after 3 attempts") from last_error
 
     for field in to_judge:
-        v = llm_verdicts.get(field)
-        if v and isinstance(v, dict):
-            match = v.get("match", "wrong").lower()
-            verdicts[field] = {"match": match if match in ("correct", "wrong") else "wrong", "reason": v.get("reason", "")}
-        else:
-            verdicts[field] = {"match": "wrong", "reason": "no verdict returned"}
+        v = llm_verdicts[field]
+        verdicts[field] = {"match": v["match"].lower(), "reason": v.get("reason", "")}
 
     return verdicts
 
@@ -206,11 +216,29 @@ class EvalRunner:
         self.judge_sem = asyncio.Semaphore(20)
         self.results: list[dict] = []
         self.t_start = time.time()
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        self.out_path = RUNS_DIR / f"{name}_{datetime.now():%Y%m%d_%H%M}_judged.json"
+        runs_dir = Path(os.environ.get("RECON_RUNS_DIR") or RUNS_DIR)
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        self.out_path = runs_dir / f"{name}_{datetime.now():%Y%m%d_%H%M%S_%f}_judged.json"
 
     async def record(self, item: dict, output: dict, elapsed: float, metadata: dict | None = None) -> dict:
-        verdicts = await judge_fields(self.oai, self.judge_sem, item["person_info"], output, item["fields"])
+        # Save successful research before making another network request. A judge
+        # outage or interrupted process must not force paid research to repeat.
+        result = {
+            **(metadata or {}),
+            "person": item["person_info"], "name": item.get("name", ""),
+            "elapsed": round(elapsed, 1), "output": output,
+            "correct": 0, "wrong": 0, "missing": 0, "verdicts": {},
+            "error": "Judgment pending", "error_type": "judgment_pending",
+        }
+        self.results.append(result)
+        self._save()
+        try:
+            verdicts = await judge_fields(self.oai, self.judge_sem, item["person_info"], output, item["fields"])
+        except JudgmentError as e:
+            result.update(error=str(e), error_type="judgment_error")
+            self._save()
+            print(f"  JUDGMENT ERROR (research saved): {e}", flush=True)
+            return result
         c = sum(1 for v in verdicts.values() if v["match"] == "correct")
         w = sum(1 for v in verdicts.values() if v["match"] == "wrong")
         m = sum(1 for v in verdicts.values() if v["match"] == "missing")
@@ -228,7 +256,9 @@ class EvalRunner:
         label = (item.get("name") or item["person_info"])[:30]
         print(f"  {label:30s} C={c} W={w} M={m} [{elapsed:.0f}s]", flush=True)
 
-        result = {
+        result.clear()
+        result.update({
+            **(metadata or {}),
             "person": item["person_info"],
             "name": item.get("name", ""),
             "elapsed": round(elapsed, 1),
@@ -236,9 +266,7 @@ class EvalRunner:
             **({"buckets": buckets} if buckets else {}),
             "verdicts": verdicts,
             "output": output,
-            **(metadata or {}),
-        }
-        self.results.append(result)
+        })
         self._save()
         return result
 
@@ -251,6 +279,7 @@ class EvalRunner:
             "name": item.get("name", ""),
             "elapsed": round(elapsed, 1),
             "error": str(error),
+            "error_type": "provider_error",
             "correct": 0, "wrong": 0, "missing": 0,
             "verdicts": {}, "output": {},
         }
@@ -259,13 +288,15 @@ class EvalRunner:
         return result
 
     def _save(self):
-        self.out_path.write_text(json.dumps({
+        temporary = self.out_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({
             "name": self.name,
             "config": self.config,
             "total_elapsed_s": round(time.time() - self.t_start, 1),
             "summary": self._summary_dict(),
             "results": self.results,
         }, indent=2, default=str))
+        temporary.replace(self.out_path)
 
     @staticmethod
     def _metrics(c: int, w: int, m: int) -> dict | None:
