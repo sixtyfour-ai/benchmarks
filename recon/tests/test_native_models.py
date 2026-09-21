@@ -7,6 +7,8 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -192,8 +194,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(metadata["terminal_format_valid"])
         self.assertEqual(metadata["input_tokens"], 30)
         self.assertEqual(requests[1]["json"], {"text_query": "Ada Example Acme", "limit": 10, "timeout_seconds": 30})
+        self.assertEqual(requests[1]["max_retries"], kimi.SEARCH_MAX_RETRIES)
         self.assertEqual(metadata["search_backend"], "moonshot/search_pro")
         self.assertEqual(metadata["search_results"], 1)
+        self.assertEqual(metadata["search_errors"], 0)
         self.assertEqual(requests[2]["json"]["messages"][2], assistant)
         self.assertEqual(
             json.loads(requests[2]["json"]["messages"][3]["content"]),
@@ -301,6 +305,46 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                          ["required", "auto", "none"])
         self.assertNotIn("response_format", chat_requests[1])
         self.assertIn("response_format", chat_requests[2])
+
+    async def test_kimi_returns_transient_search_failure_to_the_model(self):
+        first_call = {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function", "function": {
+                "name": "web_search", "arguments": '{"query":"Ada Example"}'
+            }
+        }]}
+        second_call = {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_2", "type": "function", "function": {
+                "name": "web_search", "arguments": '{"query":"Ada Example Acme"}'
+            }
+        }]}
+        final = {"role": "assistant", "content": '{"employer":"Acme","hometown":""}'}
+        request = httpx.Request("POST", kimi.SEARCH_ENDPOINT)
+        response = httpx.Response(502, request=request)
+        fake_post = AsyncMock(side_effect=[
+            FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": first_call}]}),
+            httpx.HTTPStatusError("bad gateway", request=request, response=response),
+            FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": second_call}]}),
+            FakeResponse({"search_results": [{"url": "https://example.test"}]}),
+            FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]}),
+            FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]}),
+        ])
+        with patch.object(kimi, "post_with_retry", fake_post):
+            output, metadata = await kimi.call_kimi(
+                object(), ITEM, api_key="secret", model="kimi-k3",
+                reasoning="max", max_search_rounds=3,
+            )
+
+        self.assertEqual(output["employer"], "Acme")
+        self.assertEqual(metadata["web_searches"], 2)
+        self.assertEqual(metadata["search_errors"], 1)
+        chat_requests = [call.kwargs["json"] for call in fake_post.await_args_list
+                         if call.args[1] == kimi.ENDPOINT]
+        error_result = next(
+            message for message in chat_requests[1]["messages"]
+            if message.get("tool_call_id") == "call_1"
+        )
+        self.assertEqual(error_result["tool_call_id"], "call_1")
+        self.assertIn("temporarily failed", error_result["content"])
 
     async def test_deepseek_repairs_prose_with_tool_free_compilation(self):
         research_output = [

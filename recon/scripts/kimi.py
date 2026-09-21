@@ -21,6 +21,8 @@ from native_model_common import (
 
 ENDPOINT = "https://api.moonshot.ai/v1/chat/completions"
 SEARCH_ENDPOINT = "https://api.moonshot.ai/v1/tools/search_pro"
+SEARCH_MAX_RETRIES = 4
+RETRYABLE_SEARCH_STATUS = {429, 500, 502, 503, 504}
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -66,6 +68,7 @@ async def call_kimi(
     }
     search_calls = 0
     search_results = 0
+    search_errors = 0
     terminal_repair = False
     compile_only = False
 
@@ -126,16 +129,46 @@ async def call_kimi(
                 query = arguments.get("query")
                 if not isinstance(query, str) or not query.strip():
                     raise RuntimeError("Kimi called web_search without a query")
-                search_response = await post_with_retry(
-                    client,
-                    SEARCH_ENDPOINT,
-                    json={"text_query": query.strip(), "limit": 10, "timeout_seconds": 30},
-                    headers=authorization_headers(api_key),
-                )
+                search_calls += 1
+                try:
+                    search_response = await post_with_retry(
+                        client,
+                        SEARCH_ENDPOINT,
+                        json={"text_query": query.strip(), "limit": 10, "timeout_seconds": 30},
+                        headers=authorization_headers(api_key),
+                        max_retries=SEARCH_MAX_RETRIES,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code not in RETRYABLE_SEARCH_STATUS:
+                        raise
+                    search_errors += 1
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": "web_search",
+                            "content": json.dumps(
+                                {"error": "Search temporarily failed. Try a shorter or differently phrased query."}
+                            ),
+                        }
+                    )
+                    continue
+                except (httpx.TransportError, httpx.TimeoutException):
+                    search_errors += 1
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": "web_search",
+                            "content": json.dumps(
+                                {"error": "Search temporarily failed. Try a shorter or differently phrased query."}
+                            ),
+                        }
+                    )
+                    continue
                 results = search_response.json().get("search_results")
                 if not isinstance(results, list):
                     raise RuntimeError("Kimi search API returned no search_results array")
-                search_calls += 1
                 search_results += len(results)
                 messages.append(
                     {
@@ -165,6 +198,7 @@ async def call_kimi(
             "reasoning": reasoning,
             "web_searches": search_calls,
             "search_results": search_results,
+            "search_errors": search_errors,
             "search_backend": "moonshot/search_pro",
             "search_policy": "first_turn_required_then_auto",
             "provider_status": choice.get("finish_reason"),
