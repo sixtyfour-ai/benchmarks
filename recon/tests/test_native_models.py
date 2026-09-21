@@ -33,6 +33,69 @@ class FakeResponse:
 
 
 class NativeModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_runners_repair_format_once_without_research_tools(self):
+        for provider in (kimi, glm):
+            with self.subTest(provider=provider.CONFIG.name):
+                prose = {"role": "assistant", "content": "Ada works at Acme."}
+                responses = [
+                    FakeResponse({"choices": [{"finish_reason": "stop", "message": prose}]}),
+                    FakeResponse({"choices": [{"finish_reason": "stop", "message": {
+                        "role": "assistant", "content": '{"employer":"Acme","hometown":""}'
+                    }}]}),
+                ]
+                fake_post = AsyncMock(side_effect=responses)
+                with patch.object(provider, "post_with_retry", fake_post):
+                    output, metadata = await getattr(provider, f"call_{provider.CONFIG.name}")(
+                        object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
+                        reasoning="max", max_search_rounds=10,
+                    )
+                self.assertEqual(output["employer"], "Acme")
+                self.assertTrue(metadata["terminal_repaired"])
+                repair = fake_post.await_args_list[1].kwargs["json"]
+                self.assertEqual(repair["tool_choice"], "none")
+                self.assertNotIn("tools", repair)
+                self.assertIn(prose, repair["messages"])
+                self.assertEqual(fake_post.await_count, 2)
+
+    async def test_chat_runners_do_not_score_repeated_format_failure_as_abstention(self):
+        for provider in (kimi, glm):
+            with self.subTest(provider=provider.CONFIG.name):
+                response = FakeResponse({"choices": [{"finish_reason": "stop", "message": {
+                    "role": "assistant", "content": "Still not JSON"
+                }}]})
+                fake_post = AsyncMock(return_value=response)
+                with patch.object(provider, "post_with_retry", fake_post):
+                    with self.assertRaisesRegex(RuntimeError, "no JSON object"):
+                        await getattr(provider, f"call_{provider.CONFIG.name}")(
+                            object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
+                            reasoning="max", max_search_rounds=10,
+                        )
+                self.assertEqual(fake_post.await_count, 2)
+
+    async def test_chat_runners_bound_unexpected_terminal_tool_calls(self):
+        for provider in (kimi, glm):
+            with self.subTest(provider=provider.CONFIG.name):
+                unexpected = {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "terminal_call", "type": "function", "function": {
+                        "name": "unexpected", "arguments": "{}"
+                    }
+                }]}
+                # Exercise only compilation: no provider tools may be dispatched.
+                response = FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": unexpected}]})
+                fake_post = AsyncMock(return_value=response)
+                with patch.object(provider, "post_with_retry", fake_post):
+                    with self.assertRaisesRegex(RuntimeError, "tool during terminal"):
+                        await getattr(provider, f"call_{provider.CONFIG.name}")(
+                            object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
+                            reasoning="max", max_search_rounds=0,
+                        )
+                self.assertEqual(fake_post.await_count, 2)
+                for call in fake_post.await_args_list:
+                    body = call.kwargs["json"]
+                    self.assertEqual(body["tool_choice"], "none")
+                    self.assertNotIn("tools", body)
+                    self.assertNotIn(unexpected, body["messages"])
+
     def test_positive_int_rejects_zero_and_negative_values(self):
         self.assertEqual(common.positive_int("7"), 7)
         for value in ("0", "-1"):

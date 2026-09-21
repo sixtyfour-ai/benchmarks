@@ -51,9 +51,10 @@ async def call_kimi(
         "reasoning_tokens": 0,
     }
     search_calls = 0
+    terminal_repair = False
 
-    for turn in range(max_search_rounds + 1):
-        can_search = turn < max_search_rounds
+    for turn in range(max_search_rounds + 2):
+        can_search = turn < max_search_rounds and not terminal_repair
         request_messages = (
             messages
             if can_search
@@ -80,6 +81,8 @@ async def call_kimi(
                     "function": {"name": "$web_search"},
                 }
             ]
+        else:
+            request_payload["tool_choice"] = "none"
 
         response = await post_with_retry(
             client,
@@ -96,7 +99,10 @@ async def call_kimi(
 
         if choice.get("finish_reason") == "tool_calls" or tool_calls:
             if not can_search:
-                raise RuntimeError("Kimi requested a tool during terminal compilation")
+                if terminal_repair:
+                    raise RuntimeError("Kimi requested a tool during terminal compilation")
+                terminal_repair = True
+                continue
             # Moonshot requires the complete assistant message, including its
             # reasoning content, to be returned unchanged on the next turn.
             messages.append(message)
@@ -117,6 +123,12 @@ async def call_kimi(
             continue
 
         output, terminal_format_valid = terminal_output(message.get("content"))
+        if not terminal_format_valid:
+            if terminal_repair:
+                raise RuntimeError("Kimi terminal compilation returned no JSON object")
+            messages.append(message)
+            terminal_repair = True
+            continue
         return output, {
             **totals,
             "model": payload.get("model", model),
@@ -124,6 +136,7 @@ async def call_kimi(
             "web_searches": search_calls,
             "provider_status": choice.get("finish_reason"),
             "terminal_format_valid": terminal_format_valid,
+            "terminal_repaired": terminal_repair,
         }
 
     raise RuntimeError("Kimi did not produce a terminal response")
