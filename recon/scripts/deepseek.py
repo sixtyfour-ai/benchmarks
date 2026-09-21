@@ -98,31 +98,14 @@ async def call_deepseek(
     payload = response.json()
     assert_completed(payload, "response")
     text, search_calls = response_text_and_searches(payload)
-    if not text.strip():
-        output_shape = [
-            {
-                "type": output_item.get("type"),
-                "keys": sorted(output_item),
-                "content_types": [
-                    content.get("type")
-                    if isinstance(content, dict)
-                    else type(content).__name__
-                    for content in (
-                        output_item.get("content")
-                        if isinstance(output_item.get("content"), list)
-                        else []
-                    )
-                ],
-            }
-            for output_item in payload.get("output") or []
-        ]
-        raise ValueError(f"DeepSeek returned no final text; output shape={output_shape}")
-
     output, terminal_format_valid = terminal_output(text)
     totals = usage_values(payload.get("usage"))
     terminal_repaired = False
 
     if not terminal_format_valid:
+        # A completed research response may contain only reasoning/search items.
+        # Preserve those items for the same single tool-free compilation used
+        # for prose responses; never restart the research or invent answers.
         repair_response = await post_with_retry(
             client,
             ENDPOINT,
@@ -154,6 +137,8 @@ async def call_deepseek(
         for key, value in usage_values(repair_payload.get("usage")).items():
             totals[key] += value
         output, terminal_format_valid = terminal_output(repair_text)
+        if not terminal_format_valid:
+            raise RuntimeError("DeepSeek terminal compilation returned no JSON object")
         payload = repair_payload
         terminal_repaired = terminal_format_valid
 

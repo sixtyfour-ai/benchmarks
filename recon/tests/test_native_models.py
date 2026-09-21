@@ -308,6 +308,41 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(research_output[0], repair["input"])
         self.assertEqual(repair["input"][-1]["content"], common.FINALIZE_PROMPT)
 
+    async def test_deepseek_compiles_completed_research_without_final_text(self):
+        research_items = [
+            {"type": "reasoning", "id": "reason_1", "summary": []},
+            {"type": "web_search_call", "id": "search_1", "status": "completed"},
+        ]
+        for terminal in ('{"employer":"Acme","hometown":""}', ""):
+            with self.subTest(terminal_present=bool(terminal)):
+                responses = [
+                    FakeResponse({"status": "completed", "output": research_items,
+                                  "usage": {"input_tokens": 100, "output_tokens": 20}}),
+                    FakeResponse({"status": "completed", "output_text": terminal,
+                                  "output": [], "usage": {"input_tokens": 40, "output_tokens": 10}}),
+                ]
+                fake_post = AsyncMock(side_effect=responses)
+                with patch.object(deepseek, "post_with_retry", fake_post):
+                    call = deepseek.call_deepseek(
+                        object(), ITEM, api_key="secret", model="deepseek-v4-pro",
+                        reasoning="high", max_search_rounds=None,
+                    )
+                    if terminal:
+                        output, metadata = await call
+                        self.assertEqual(output["employer"], "Acme")
+                        self.assertTrue(metadata["terminal_repaired"])
+                        self.assertTrue(metadata["terminal_format_valid"])
+                        self.assertEqual(metadata["web_searches"], 1)
+                        self.assertEqual(metadata["input_tokens"], 140)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "no JSON object"):
+                            await call
+                self.assertEqual(fake_post.await_count, 2)
+                repair = fake_post.await_args_list[1].kwargs["json"]
+                self.assertNotIn("tools", repair)
+                self.assertEqual(repair["input"][1:-1], research_items)
+                self.assertEqual(repair["input"][-1]["content"], common.FINALIZE_PROMPT)
+
     async def test_glm_uses_zai_search_and_thinking_toggle(self):
         assistant = {
             "role": "assistant",
