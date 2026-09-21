@@ -1,4 +1,4 @@
-"""Run the benchmark against Kimi K3 with Moonshot's built-in web search."""
+"""Run the benchmark against Kimi K3 with Moonshot's native search API."""
 
 import asyncio
 import json
@@ -20,6 +20,20 @@ from native_model_common import (
 
 
 ENDPOINT = "https://api.moonshot.ai/v1/chat/completions"
+SEARCH_ENDPOINT = "https://api.moonshot.ai/v1/tools/search_pro"
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the public web for relevant evidence and source passages.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "A focused web search query"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
 CONFIG = ProviderConfig(
     name="kimi",
     default_model="kimi-k3",
@@ -51,6 +65,7 @@ async def call_kimi(
         "reasoning_tokens": 0,
     }
     search_calls = 0
+    search_results = 0
     terminal_repair = False
 
     for turn in range(max_search_rounds + 2):
@@ -75,12 +90,7 @@ async def call_kimi(
             },
         }
         if can_search:
-            request_payload["tools"] = [
-                {
-                    "type": "builtin_function",
-                    "function": {"name": "$web_search"},
-                }
-            ]
+            request_payload["tools"] = [WEB_SEARCH_TOOL]
         else:
             request_payload["tool_choice"] = "none"
 
@@ -108,16 +118,29 @@ async def call_kimi(
             messages.append(message)
             for tool_call in tool_calls:
                 function = tool_call.get("function") or {}
-                if function.get("name") != "$web_search":
+                if function.get("name") != "web_search":
                     raise RuntimeError(f"unexpected Kimi tool: {function.get('name')}")
                 arguments = json.loads(function.get("arguments") or "{}")
+                query = arguments.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    raise RuntimeError("Kimi called web_search without a query")
+                search_response = await post_with_retry(
+                    client,
+                    SEARCH_ENDPOINT,
+                    json={"text_query": query.strip(), "limit": 10, "timeout_seconds": 30},
+                    headers=authorization_headers(api_key),
+                )
+                results = search_response.json().get("search_results")
+                if not isinstance(results, list):
+                    raise RuntimeError("Kimi search API returned no search_results array")
                 search_calls += 1
+                search_results += len(results)
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
-                        "name": "$web_search",
-                        "content": json.dumps(arguments),
+                        "name": "web_search",
+                        "content": json.dumps(results, ensure_ascii=False),
                     }
                 )
             continue
@@ -134,6 +157,8 @@ async def call_kimi(
             "model": payload.get("model", model),
             "reasoning": reasoning,
             "web_searches": search_calls,
+            "search_results": search_results,
+            "search_backend": "moonshot/search_pro",
             "provider_status": choice.get("finish_reason"),
             "terminal_format_valid": terminal_format_valid,
             "terminal_repaired": terminal_repair,

@@ -140,7 +140,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                     "id": "call_1",
                     "type": "function",
                     "function": {
-                        "name": "$web_search",
+                        "name": "web_search",
                         "arguments": '{"query":"Ada Example Acme"}',
                     },
                 }
@@ -154,6 +154,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                     "choices": [{"finish_reason": "tool_calls", "message": assistant}],
                 }
             ),
+            FakeResponse({"search_results": [{"url": "https://example.test", "chunks": [{"text": "Ada works at Acme."}]}]}),
             FakeResponse(
                 {
                     "model": "kimi-k3",
@@ -190,10 +191,13 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["web_searches"], 1)
         self.assertTrue(metadata["terminal_format_valid"])
         self.assertEqual(metadata["input_tokens"], 30)
-        self.assertEqual(requests[1]["json"]["messages"][2], assistant)
+        self.assertEqual(requests[1]["json"], {"text_query": "Ada Example Acme", "limit": 10, "timeout_seconds": 30})
+        self.assertEqual(metadata["search_backend"], "moonshot/search_pro")
+        self.assertEqual(metadata["search_results"], 1)
+        self.assertEqual(requests[2]["json"]["messages"][2], assistant)
         self.assertEqual(
-            json.loads(requests[1]["json"]["messages"][3]["content"]),
-            {"query": "Ada Example Acme"},
+            json.loads(requests[2]["json"]["messages"][3]["content"]),
+            [{"url": "https://example.test", "chunks": [{"text": "Ada works at Acme."}]}],
         )
         response_format = requests[0]["json"]["response_format"]
         self.assertTrue(response_format["json_schema"]["strict"])
@@ -201,9 +205,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             response_format["json_schema"]["schema"]["required"],
             ["employer", "hometown"],
         )
-        self.assertNotIn("tools", requests[1]["json"])
+        self.assertNotIn("tools", requests[2]["json"])
         self.assertIn(
-            "budget is exhausted", requests[1]["json"]["messages"][-1]["content"]
+            "budget is exhausted", requests[2]["json"]["messages"][-1]["content"]
         )
 
     async def test_deepseek_uses_server_side_search_and_requested_reasoning(self):
@@ -248,6 +252,27 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["tools"], [{"type": "web_search"}])
         self.assertEqual(body["text"]["format"]["type"], "json_schema")
         self.assertFalse(metadata["terminal_repaired"])
+
+    async def test_kimi_rejects_invalid_search_arguments_and_response(self):
+        for arguments, search_response, expected_calls in (
+            ('{"query":""}', None, 1),
+            ('{"query":"Ada Example"}', {}, 2),
+        ):
+            with self.subTest(arguments=arguments):
+                message = {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call_1", "type": "function", "function": {
+                        "name": "web_search", "arguments": arguments,
+                    }
+                }]}
+                responses = [FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": message}]})]
+                if search_response is not None:
+                    responses.append(FakeResponse(search_response))
+                fake_post = AsyncMock(side_effect=responses)
+                with patch.object(kimi, "post_with_retry", fake_post):
+                    with self.assertRaises(RuntimeError):
+                        await kimi.call_kimi(object(), ITEM, api_key="secret", model="kimi-k3",
+                                             reasoning="max", max_search_rounds=10)
+                self.assertEqual(fake_post.await_count, expected_calls)
 
     async def test_deepseek_repairs_prose_with_tool_free_compilation(self):
         research_output = [
