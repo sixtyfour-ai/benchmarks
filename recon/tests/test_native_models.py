@@ -50,7 +50,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                         reasoning="max", max_search_rounds=10,
                     )
                 self.assertEqual(output["employer"], "Acme")
-                self.assertTrue(metadata["terminal_repaired"])
+                self.assertEqual(metadata["terminal_repaired"], provider is glm)
                 repair = fake_post.await_args_list[1].kwargs["json"]
                 self.assertEqual(repair["tool_choice"], "none")
                 self.assertNotIn("tools", repair)
@@ -70,7 +70,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                             object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
                             reasoning="max", max_search_rounds=10,
                         )
-                self.assertEqual(fake_post.await_count, 2)
+                self.assertEqual(fake_post.await_count, 3 if provider is kimi else 2)
 
     async def test_chat_runners_bound_unexpected_terminal_tool_calls(self):
         for provider in (kimi, glm):
@@ -199,7 +199,9 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             json.loads(requests[2]["json"]["messages"][3]["content"]),
             [{"url": "https://example.test", "chunks": [{"text": "Ada works at Acme."}]}],
         )
-        response_format = requests[0]["json"]["response_format"]
+        self.assertNotIn("response_format", requests[0]["json"])
+        self.assertEqual(requests[0]["json"]["tools"], [kimi.WEB_SEARCH_TOOL])
+        response_format = requests[2]["json"]["response_format"]
         self.assertTrue(response_format["json_schema"]["strict"])
         self.assertEqual(
             response_format["json_schema"]["schema"]["required"],

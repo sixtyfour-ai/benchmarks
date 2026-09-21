@@ -67,9 +67,10 @@ async def call_kimi(
     search_calls = 0
     search_results = 0
     terminal_repair = False
+    compile_only = False
 
     for turn in range(max_search_rounds + 2):
-        can_search = turn < max_search_rounds and not terminal_repair
+        can_search = turn < max_search_rounds and not terminal_repair and not compile_only
         request_messages = (
             messages
             if can_search
@@ -80,19 +81,19 @@ async def call_kimi(
             "messages": request_messages,
             "reasoning_effort": reasoning,
             "max_completion_tokens": 131072,
-            "response_format": {
+        }
+        if can_search:
+            request_payload["tools"] = [WEB_SEARCH_TOOL]
+        else:
+            request_payload["tool_choice"] = "none"
+            request_payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "people_intelligence_fields",
                     "strict": True,
                     "schema": schema,
                 },
-            },
-        }
-        if can_search:
-            request_payload["tools"] = [WEB_SEARCH_TOOL]
-        else:
-            request_payload["tool_choice"] = "none"
+            }
 
         response = await post_with_retry(
             client,
@@ -143,6 +144,11 @@ async def call_kimi(
                         "content": json.dumps(results, ensure_ascii=False),
                     }
                 )
+            continue
+
+        if can_search:
+            messages.append(message)
+            compile_only = True
             continue
 
         output, terminal_format_valid = terminal_output(message.get("content"))
