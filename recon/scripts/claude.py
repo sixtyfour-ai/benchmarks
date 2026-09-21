@@ -26,6 +26,10 @@ class ClaudeRunError(RuntimeError):
         self.responses = responses
 
 
+class TerminalFormatError(ValueError):
+    """Completed model response that does not supply the requested answer JSON."""
+
+
 def context_options(model, enabled=True):
     """Use provider-managed context; never rewrite local history or prompts."""
     if not enabled:
@@ -78,16 +82,17 @@ async def stream_message(client, request, attempts=4):
 def extract_output(response, fields):
     if any(block.get("type") == "compaction" and not block.get("content") for block in response.get("content", [])):
         raise ValueError("provider returned an empty compaction block; task result is unavailable")
-    if response.get("stop_reason") == "refusal":
-        return {field["fieldname"]: "" for field in fields}
-    if response.get("stop_reason") != "end_turn":
+    if response.get("stop_reason") not in {"end_turn", "refusal"}:
         raise ValueError(f"incomplete response: {response.get('stop_reason')}")
     texts = [block["text"] for block in response.get("content", []) if block.get("type") == "text"]
     # Last text block is the answer, not preliminary research narration.
-    output = json_content(texts[-1] if texts else "")
+    try:
+        output = json_content(texts[-1] if texts else "")
+    except ValueError as error:
+        raise TerminalFormatError(str(error)) from error
     names = {field["fieldname"] for field in fields}
     if set(output) != names or any(not isinstance(value, str) for value in output.values()):
-        raise ValueError("final JSON must contain exactly the requested string fields")
+        raise TerminalFormatError("final JSON must contain exactly the requested string fields")
     return output
 
 
@@ -115,13 +120,19 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
         responses.append(response)
         retries += retried
         if response.get("stop_reason") != "pause_turn":
+            format_valid = True
             try:
                 output = extract_output(response, item["fields"])
+            except TerminalFormatError:
+                output = {field["fieldname"]: "" for field in item["fields"]}
+                format_valid = False
             except ValueError as error:
                 raise ClaudeRunError(str(error), responses) from error
             return output, {
                 # This is an API signal, not a semantic classifier of prose.
                 "api_refusal": response.get("stop_reason") == "refusal",
+                "terminal_format_valid": format_valid,
+                "terminal_status": "api_refusal" if response.get("stop_reason") == "refusal" else ("structured_answer" if format_valid else "unstructured_nonanswer"),
                 "continuations": continuation, "transport_retries": retries,
                 "input_tokens": token_usage(responses, "input_tokens"),
                 "output_tokens": token_usage(responses, "output_tokens"),

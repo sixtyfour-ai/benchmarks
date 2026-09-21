@@ -54,8 +54,14 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "continuation limit"):
                 await claude.call_api(None, ITEM, model="claude-opus-5", max_continuations=1)
 
-    def test_refusal_is_valid_missing(self):
-        self.assertEqual(claude.extract_output(reply("refusal", "Declined"), ITEM["fields"]), {"employer": ""})
+    async def test_refusal_is_valid_missing(self):
+        response = reply("refusal", "Declined")
+        with patch.object(claude, "stream_message", AsyncMock(return_value=(response, 0))):
+            output, metadata = await claude.call_api(None, ITEM, model="claude-opus-5")
+        self.assertEqual(output, {"employer": ""})
+        self.assertTrue(metadata["api_refusal"])
+        self.assertFalse(metadata["terminal_format_valid"])
+        self.assertEqual(metadata["terminal_status"], "api_refusal")
 
     def test_failed_compaction_is_not_scored_as_task_refusal(self):
         response = {"stop_reason": "refusal", "content": [{"type": "compaction"}]}
@@ -78,10 +84,31 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         response = reply(text="I cannot provide this information.")
         mocked = AsyncMock(return_value=(response, 0))
         with patch.object(claude, "stream_message", mocked):
-            with self.assertRaises(claude.ClaudeRunError) as raised:
-                await claude.call_api(None, ITEM, model="claude-sonnet-5")
-        self.assertEqual(raised.exception.responses, [response])
+            output, metadata = await claude.call_api(None, ITEM, model="claude-sonnet-5")
+        self.assertEqual(metadata["responses"], [response])
+        self.assertEqual(output, {"employer": ""})
+        self.assertFalse(metadata["terminal_format_valid"])
+        self.assertFalse(metadata["api_refusal"])
+        self.assertEqual(metadata["terminal_status"], "unstructured_nonanswer")
         self.assertEqual(mocked.await_count, 1)
+
+    async def test_terminal_schema_mismatches_are_missing_without_repair(self):
+        for text in ['{}', '{"employer":12}', '{"employer":"Acme","extra":"bad"}']:
+            response = reply(text=text)
+            mocked = AsyncMock(return_value=(response, 0))
+            with self.subTest(text=text), patch.object(claude, "stream_message", mocked):
+                output, metadata = await claude.call_api(None, ITEM, model="claude-sonnet-5")
+            self.assertEqual(output, {"employer": ""})
+            self.assertFalse(metadata["terminal_format_valid"])
+            self.assertEqual(metadata["responses"], [response])
+            self.assertEqual(mocked.await_count, 1)
+
+    async def test_valid_terminal_records_validity(self):
+        with patch.object(claude, "stream_message", AsyncMock(return_value=(reply(), 0))):
+            output, metadata = await claude.call_api(None, ITEM, model="claude-sonnet-5")
+        self.assertEqual(output, {"employer": "Acme"})
+        self.assertTrue(metadata["terminal_format_valid"])
+        self.assertEqual(metadata["terminal_status"], "structured_answer")
 
     async def test_continuation_failure_retains_earlier_responses(self):
         pause = reply("pause_turn")
