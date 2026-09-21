@@ -76,6 +76,8 @@ async def stream_message(client, request, attempts=4):
 
 
 def extract_output(response, fields):
+    if any(block.get("type") == "compaction" and not block.get("content") for block in response.get("content", [])):
+        raise ValueError("provider returned an empty compaction block; task result is unavailable")
     if response.get("stop_reason") == "refusal":
         return {field["fieldname"]: "" for field in fields}
     if response.get("stop_reason") != "end_turn":

@@ -57,6 +57,11 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
     def test_refusal_is_valid_missing(self):
         self.assertEqual(claude.extract_output(reply("refusal", "Declined"), ITEM["fields"]), {"employer": ""})
 
+    def test_failed_compaction_is_not_scored_as_task_refusal(self):
+        response = {"stop_reason": "refusal", "content": [{"type": "compaction"}]}
+        with self.assertRaisesRegex(ValueError, "empty compaction"):
+            claude.extract_output(response, ITEM["fields"])
+
     def test_empty_strings_are_valid(self):
         self.assertEqual(claude.extract_output(reply(text='{"employer":""}'), ITEM["fields"]), {"employer": ""})
 
