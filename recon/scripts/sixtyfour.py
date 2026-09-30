@@ -7,11 +7,15 @@ Usage:
     python scripts/sixtyfour.py
     python scripts/sixtyfour.py --tier medium --people 5
     python scripts/sixtyfour.py --tier high --concurrency 10
+    python scripts/sixtyfour.py --tier scout
+    python scripts/sixtyfour.py --tier xhigh --concurrency 5
 
 Tiers:
     low     — Baseline, fast and lightweight. Available to all orgs.
     medium  — Deeper research with more sources. Available to all orgs.
+    scout   — OSINT-grade investigation at a lower price. Exclusive access — contact sales.
     high    — OSINT-grade investigation. Exclusive access — contact sales.
+    xhigh   — Our deepest investigation. Exclusive access — contact sales.
 
 Get an API key: https://app.sixtyfour.ai/keys
 Docs: https://docs.sixtyfour.ai/api-reference/endpoint/people-intelligence
@@ -34,8 +38,8 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-TIERS = ["low", "medium", "high"]
-RESTRICTED_TIERS = {"high"}
+TIERS = ["low", "medium", "scout", "high", "xhigh"]
+RESTRICTED_TIERS = {"scout", "high", "xhigh"}
 
 
 def build_struct(fields: list[dict]) -> dict:
@@ -84,7 +88,7 @@ def _parse_lead_info(person_info: str) -> dict:
     return info
 
 
-async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 3600) -> dict:
+async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 14400) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         await asyncio.sleep(10)

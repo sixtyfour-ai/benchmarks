@@ -69,7 +69,9 @@ Each script runs all 140 people by default. Use `--people N` for a smaller test.
 # Sixtyfour (default: low tier)
 python scripts/sixtyfour.py --tier low
 python scripts/sixtyfour.py --tier medium
+python scripts/sixtyfour.py --tier scout         # requires access — contact sales
 python scripts/sixtyfour.py --tier high          # requires access — contact sales
+python scripts/sixtyfour.py --tier xhigh         # requires access — contact sales
 
 # OpenAI GPT
 python scripts/gpt.py                            # default: gpt-5.6-sol, reasoning=xhigh
@@ -108,7 +110,9 @@ Commands for configurations supported by these scripts:
 |----------|--------|---------|
 | Sixtyfour Low | `sixtyfour.py` | `--tier low` |
 | Sixtyfour Medium | `sixtyfour.py` | `--tier medium` |
+| Sixtyfour Scout | `sixtyfour.py` | `--tier scout` |
 | Sixtyfour High | `sixtyfour.py` | `--tier high` |
+| Sixtyfour xHigh | `sixtyfour.py` | `--tier xhigh` |
 | GPT-5.4 xhigh | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
 | Gemini 3.1 Pro | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
 | Grok 4.3 | `grok.py` | `--model 4.3` |
