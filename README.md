@@ -11,7 +11,7 @@ Open benchmarks for evaluating people and company research capabilities.
 ```bash
 git clone https://github.com/sixtyfour-ai/benchmarks.git
 cd benchmarks/recon
-pip install httpx openai python-dotenv
+pip install anthropic httpx openai python-dotenv
 ```
 
 ### Running a provider
@@ -43,6 +43,9 @@ python scripts/deepseek.py
 
 export ZAI_API_KEY="your-key"
 python scripts/glm.py
+
+export ANTHROPIC_API_KEY="your-key"
+python scripts/claude.py
 ```
 
 ## Requirements

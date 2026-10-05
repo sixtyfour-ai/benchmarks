@@ -5,9 +5,21 @@
   "total_people": 140,
   "total_fields": 514,
   "judge": "gpt-4.1-mini (binary correct/wrong, 98.5% human agreement)",
-  "date": "2026-09-11",
+  "date": "2026-10-02",
   "weighted_formula": "(correct - wrong) / total_fields",
   "results": [
+    {
+      "provider": "Sixtyfour",
+      "configuration": "XHigh",
+      "correct": 434,
+      "wrong": 71,
+      "missing": 9,
+      "total_fields": 514,
+      "weighted_accuracy": 70.6,
+      "accuracy": 84.4,
+      "precision": 85.9,
+      "people_evaluated": 140
+    },
     {
       "provider": "Sixtyfour",
       "configuration": "High",
@@ -18,6 +30,18 @@
       "weighted_accuracy": 54.3,
       "accuracy": 67.7,
       "precision": 83.5,
+      "people_evaluated": 140
+    },
+    {
+      "provider": "Sixtyfour",
+      "configuration": "Scout",
+      "correct": 341,
+      "wrong": 92,
+      "missing": 81,
+      "total_fields": 514,
+      "weighted_accuracy": 48.4,
+      "accuracy": 66.3,
+      "precision": 78.8,
       "people_evaluated": 140
     },
     {
@@ -58,7 +82,7 @@
     },
     {
       "provider": "xAI",
-      "configuration": "Grok 4.20-ma",
+      "configuration": "Grok 4.20 multi-agent",
       "correct": 265,
       "wrong": 79,
       "missing": 170,
@@ -70,7 +94,7 @@
     },
     {
       "provider": "xAI",
-      "configuration": "Grok 4.6",
+      "configuration": "Grok 4.6 (high)",
       "correct": 261,
       "wrong": 76,
       "missing": 177,
@@ -117,8 +141,20 @@
       "people_evaluated": 140
     },
     {
+      "provider": "Moonshot",
+      "configuration": "Kimi K3 (max)",
+      "correct": 185,
+      "wrong": 46,
+      "missing": 283,
+      "total_fields": 514,
+      "weighted_accuracy": 27.0,
+      "accuracy": 36.0,
+      "precision": 80.1,
+      "people_evaluated": 140
+    },
+    {
       "provider": "Exa",
-      "configuration": "agent xhigh",
+      "configuration": "agent (xhigh)",
       "correct": 194,
       "wrong": 71,
       "missing": 249,
@@ -130,7 +166,7 @@
     },
     {
       "provider": "OpenAI",
-      "configuration": "GPT-5.6-sol xhigh",
+      "configuration": "GPT-5.6-sol (xhigh)",
       "correct": 161,
       "wrong": 56,
       "missing": 297,
@@ -153,15 +189,51 @@
       "people_evaluated": 140
     },
     {
+      "provider": "Anthropic",
+      "configuration": "Claude Sonnet 5 (xhigh)",
+      "correct": 103,
+      "wrong": 38,
+      "missing": 373,
+      "total_fields": 514,
+      "weighted_accuracy": 12.6,
+      "accuracy": 20.0,
+      "precision": 73.0,
+      "people_evaluated": 140
+    },
+    {
+      "provider": "DeepSeek",
+      "configuration": "V4 Flash (high)",
+      "correct": 96,
+      "wrong": 32,
+      "missing": 386,
+      "total_fields": 514,
+      "weighted_accuracy": 12.5,
+      "accuracy": 18.7,
+      "precision": 75.0,
+      "people_evaluated": 140
+    },
+    {
       "provider": "DeepSeek",
       "configuration": "V4 Pro (high)",
-      "correct": 65,
-      "wrong": 17,
-      "missing": 432,
+      "correct": 97,
+      "wrong": 34,
+      "missing": 383,
       "total_fields": 514,
-      "weighted_accuracy": 9.3,
-      "accuracy": 12.6,
-      "precision": 79.3,
+      "weighted_accuracy": 12.3,
+      "accuracy": 18.9,
+      "precision": 74.0,
+      "people_evaluated": 140
+    },
+    {
+      "provider": "Z.AI",
+      "configuration": "GLM 5.3 (max)",
+      "correct": 71,
+      "wrong": 52,
+      "missing": 391,
+      "total_fields": 514,
+      "weighted_accuracy": 3.7,
+      "accuracy": 13.8,
+      "precision": 57.7,
       "people_evaluated": 140
     },
     {

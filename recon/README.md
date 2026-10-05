@@ -8,19 +8,25 @@ A benchmark for evaluating AI systems on verified people research.
 
 | Provider | Configuration | Accuracy | Weighted Accuracy | Precision | Correct / Wrong / Missing |
 |----------|--------------|----------|-------------------|-----------|-------------|
+| Sixtyfour | XHigh | 84.4% | +70.6% | 85.9% | 434 / 71 / 9 |
 | Sixtyfour | High | 67.7% | +54.3% | 83.5% | 348 / 69 / 97 |
+| Sixtyfour | Scout | 66.3% | +48.4% | 78.8% | 341 / 92 / 81 |
 | Sixtyfour | Medium | 56.0% | +44.7% | 83.2% | 288 / 58 / 168 |
 | Parallel | Ultra 2x | 54.3% | +41.1% | 80.4% | 279 / 68 / 167 |
 | Parallel | Ultra 8x | 52.1% | +37.5% | 78.1% | 268 / 75 / 171 |
-| xAI | Grok 4.20-ma | 51.6% | +36.2% | 77.0% | 265 / 79 / 170 |
-| xAI | Grok 4.6 | 50.8% | +36.0% | 77.4% | 261 / 76 / 177 |
+| xAI | Grok 4.20 multi-agent | 51.6% | +36.2% | 77.0% | 265 / 79 / 170 |
+| xAI | Grok 4.6 (high) | 50.8% | +36.0% | 77.4% | 261 / 76 / 177 |
 | xAI | Grok 4.3 | 44.9% | +30.9% | 76.2% | 231 / 72 / 211 |
 | Sixtyfour | Low | 49.8% | +28.8% | 70.3% | 256 / 108 / 150 |
 | Parallel | Ultra | 43.4% | +27.2% | 72.9% | 223 / 83 / 208 |
-| Exa | agent xhigh | 37.7% | +23.9% | 73.2% | 194 / 71 / 249 |
-| OpenAI | GPT-5.6-sol xhigh | 31.3% | +20.4% | 74.2% | 161 / 56 / 297 |
+| Moonshot | Kimi K3 (max) | 36.0% | +27.0% | 80.1% | 185 / 46 / 283 |
+| Exa | agent (xhigh) | 37.7% | +23.9% | 73.2% | 194 / 71 / 249 |
+| OpenAI | GPT-5.6-sol (xhigh) | 31.3% | +20.4% | 74.2% | 161 / 56 / 297 |
 | Google | Gemini 3.1 Pro (high) | 23.2% | +13.4% | 70.4% | 119 / 50 / 345 |
-| DeepSeek | V4 Pro (high) | 12.6% | +9.3% | 79.3% | 65 / 17 / 432 |
+| Anthropic | Claude Sonnet 5 (xhigh) | 20.0% | +12.6% | 73.0% | 103 / 38 / 373 |
+| DeepSeek | V4 Flash (high) | 18.7% | +12.5% | 75.0% | 96 / 32 / 386 |
+| DeepSeek | V4 Pro (high) | 18.9% | +12.3% | 74.0% | 97 / 34 / 383 |
+| Z.AI | GLM 5.3 (max) | 13.8% | +3.7% | 57.7% | 71 / 52 / 391 |
 | Anthropic | Claude Haiku 4.5 | 7.6% | +1.6% | 55.7% | 39 / 31 / 444 |
 
 **Weighted accuracy** = (correct − wrong) / total_fields. Penalizes incorrect answers.
@@ -133,19 +139,19 @@ Commands for configurations supported by these scripts:
 | Sixtyfour Medium | `sixtyfour.py` | `--tier medium` |
 | Sixtyfour Scout | `sixtyfour.py` | `--tier scout` |
 | Sixtyfour High | `sixtyfour.py` | `--tier high` |
-| Sixtyfour xHigh | `sixtyfour.py` | `--tier xhigh` |
-| GPT-5.6-sol xhigh | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
-| Gemini 3.1 Pro | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
+| Sixtyfour XHigh | `sixtyfour.py` | `--tier xhigh` |
+| GPT-5.6-sol (xhigh) | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
+| Gemini 3.1 Pro (high) | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
 | Grok 4.20 multi-agent | `grok.py` | `--model 4.20-ma` |
-| Grok 4.6 | `grok.py` | `--model 4.6 --reasoning high` |
+| Grok 4.6 (high) | `grok.py` | `--model 4.6 --reasoning high` |
 | Grok 4.3 | `grok.py` | `--model 4.3` |
-| Kimi K3 | `kimi.py` | `--model kimi-k3 --reasoning max` |
-| GLM 5.3 | `glm.py` | `--model glm-5.3 --reasoning max` |
-| DeepSeek V4 Flash | `deepseek.py` | `--model deepseek-flash --reasoning high` |
-| DeepSeek V4 Pro | `deepseek.py` | `--model deepseek-v4-pro --reasoning high` |
-| Claude Sonnet 5 | `claude.py` | `--model claude-sonnet-5 --effort xhigh` |
+| Kimi K3 (max) | `kimi.py` | `--model kimi-k3 --reasoning max` |
+| GLM 5.3 (max) | `glm.py` | `--model glm-5.3 --reasoning max` |
+| DeepSeek V4 Flash (high) | `deepseek.py` | `--model deepseek-flash --reasoning high` |
+| DeepSeek V4 Pro (high) | `deepseek.py` | `--model deepseek-v4-pro --reasoning high` |
+| Claude Sonnet 5 (xhigh) | `claude.py` | `--model claude-sonnet-5 --effort xhigh` |
 | Claude Haiku 4.5 | `claude.py` | `--model claude-haiku-4-5` |
-| Exa agent xhigh | `exa.py` | `--mode agent --effort xhigh` |
+| Exa agent (xhigh) | `exa.py` | `--mode agent --effort xhigh` |
 | Parallel Ultra | `parallel.py` | `--processor ultra` |
 | Parallel Ultra 2x | `parallel.py` | `--processor ultra2x` |
 | Parallel Ultra 8x | `parallel.py` | `--processor ultra8x` |
