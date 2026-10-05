@@ -13,13 +13,15 @@ import httpx
 
 from judge import post_with_retry
 from native_model_common import (
-    FINALIZE_PROMPT,
+    COMPILE_PROMPT,
     SYSTEM_PROMPT,
+    SEARCH_ERRORS,
     ProviderConfig,
     authorization_headers,
     build_schema,
     build_user_prompt,
     run_provider,
+    search_failure,
     terminal_output,
     usage_values,
 )
@@ -27,7 +29,7 @@ from native_model_common import (
 
 ENDPOINT = "https://api.deepseek.com/responses"
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
-EXA_RESULTS_PER_SEARCH = 5
+EXA_RESULTS_PER_SEARCH = 10
 EXA_TEXT_CHARACTERS = 2000
 WEB_SEARCH_FUNCTION = {
     "type": "function",
@@ -46,9 +48,8 @@ CONFIG = ProviderConfig(
     name="deepseek",
     default_model="deepseek-flash",
     key_env="DEEPSEEK_API_KEY",
-    default_reasoning="none",
+    default_reasoning="high",
     reasoning_choices=("none", "low", "medium", "high", "xhigh", "max"),
-    default_search_rounds=10,
 )
 
 
@@ -93,12 +94,10 @@ async def call_deepseek(
     api_key: str,
     model: str,
     reasoning: str,
-    max_search_rounds: int,
 ) -> tuple[dict, dict]:
     if "flash" in model:
         return await call_deepseek_flash(
             client, item, api_key=api_key, model=model, reasoning=reasoning,
-            max_search_rounds=max_search_rounds,
         )
     return await call_deepseek_server_search(
         client, item, api_key=api_key, model=model, reasoning=reasoning,
@@ -155,7 +154,7 @@ async def call_deepseek_server_search(
                 "input": [
                     {"role": "user", "content": build_user_prompt(item)},
                     *(payload.get("output") or []),
-                    {"role": "user", "content": FINALIZE_PROMPT},
+                    {"role": "user", "content": COMPILE_PROMPT},
                 ],
                 "reasoning": {"effort": reasoning},
                 "max_output_tokens": 16384,
@@ -218,7 +217,6 @@ async def call_deepseek_flash(
     api_key: str,
     model: str,
     reasoning: str,
-    max_search_rounds: int,
 ) -> tuple[dict, dict]:
     exa_key = os.getenv("EXA_API_KEY")
     if not exa_key:
@@ -228,15 +226,20 @@ async def call_deepseek_flash(
     totals = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0}
     search_calls = 0
     search_results = 0
+    search_errors = 0
+    search_error_types: dict[str, int] = {}
+    search_error_examples: list[str] = []
     terminal_repair = False
     compile_only = False
 
-    for turn in range(max_search_rounds + 2):
-        can_search = turn < max_search_rounds and not compile_only and not terminal_repair
+    # Research continues until Flash stops calling search; a strict-schema
+    # compilation turn follows.
+    while True:
+        can_search = not compile_only and not terminal_repair
         request = {
             "model": model,
             "instructions": SYSTEM_PROMPT,
-            "input": history if can_search else [*history, {"role": "user", "content": FINALIZE_PROMPT}],
+            "input": history if can_search else [*history, {"role": "user", "content": COMPILE_PROMPT}],
             "reasoning": {"effort": reasoning},
             "max_output_tokens": 131072 if can_search else 16384,
         }
@@ -276,35 +279,37 @@ async def call_deepseek_flash(
                 query = arguments.get("query")
                 if not isinstance(query, str) or not query.strip():
                     raise RuntimeError("DeepSeek Flash called web_search without a query")
-                if search_calls >= max_search_rounds:
+                search_calls += 1
+                try:
+                    search_response = await post_with_retry(
+                        client,
+                        EXA_SEARCH_ENDPOINT,
+                        headers={"x-api-key": exa_key, "Content-Type": "application/json"},
+                        json={
+                            "query": query.strip(), "type": "auto",
+                            "numResults": EXA_RESULTS_PER_SEARCH,
+                            "contents": {"text": {"maxCharacters": EXA_TEXT_CHARACTERS}},
+                        },
+                    )
+                except SEARCH_ERRORS as exc:
+                    error_type, error_message = search_failure(exc)
+                    search_errors += 1
+                    search_error_types[error_type] = search_error_types.get(error_type, 0) + 1
+                    if len(search_error_examples) < 5:
+                        search_error_examples.append(error_message)
                     history.append({
                         "type": "function_call_output",
                         "call_id": function_call["call_id"],
-                        "output": json.dumps({
-                            "error": "Search budget exhausted. Use the evidence already collected."
-                        }),
+                        "output": json.dumps({"error": error_message}),
                     })
                     continue
-                search_response = await post_with_retry(
-                    client,
-                    EXA_SEARCH_ENDPOINT,
-                    headers={"x-api-key": exa_key, "Content-Type": "application/json"},
-                    json={
-                        "query": query.strip(), "type": "auto",
-                        "numResults": EXA_RESULTS_PER_SEARCH,
-                        "contents": {"text": {"maxCharacters": EXA_TEXT_CHARACTERS}},
-                    },
-                )
                 results = compact_exa_results(search_response.json())
-                search_calls += 1
                 search_results += len(results)
                 history.append({
                     "type": "function_call_output",
                     "call_id": function_call["call_id"],
                     "output": json.dumps(results, ensure_ascii=False),
                 })
-            if search_calls >= max_search_rounds:
-                compile_only = True
             continue
 
         if can_search:
@@ -326,14 +331,15 @@ async def call_deepseek_flash(
             "reasoning": reasoning,
             "web_searches": search_calls,
             "search_results": search_results,
+            "search_errors": search_errors,
+            "search_error_types": search_error_types,
+            "search_error_examples": search_error_examples,
             "search_backend": "exa/search",
             "search_policy": "auto_in_thinking_mode",
             "provider_status": payload.get("status"),
             "terminal_format_valid": terminal_format_valid,
             "terminal_repaired": terminal_repair,
         }
-
-    raise RuntimeError("DeepSeek Flash did not produce a terminal response")
 
 
 if __name__ == "__main__":

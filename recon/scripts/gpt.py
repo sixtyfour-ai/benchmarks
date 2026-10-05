@@ -7,6 +7,9 @@ Usage:
     python scripts/gpt.py --model gpt-5.6-sol --reasoning xhigh --concurrency 20
 
 Requires: OPENAI_API_KEY in env
+
+Each request runs in OpenAI's background mode and is polled until it finishes,
+with web search and code interpreter enabled.
 """
 
 import argparse
@@ -16,10 +19,12 @@ import os
 import time
 
 import httpx
-from judge import load_people, EvalRunner, post_with_retry
+from judge import load_people, EvalRunner, get_with_retry, post_with_retry
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
+POLL_SECONDS = 10
+PENDING_STATUSES = {"queued", "in_progress"}
 
 
 def build_schema(fields: list[dict]) -> dict:
@@ -53,10 +58,22 @@ async def call_api(client: httpx.AsyncClient, item: dict, model: str, reasoning:
                 {"type": "code_interpreter", "container": {"type": "auto"}},
             ],
             "text": {"format": build_schema(item["fields"])},
+            "background": True,
         },
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
     )
-    return resp.json()
+    response = resp.json()
+    while response.get("status") in PENDING_STATUSES:
+        await asyncio.sleep(POLL_SECONDS)
+        poll = await get_with_retry(
+            client,
+            f"{OPENAI_ENDPOINT}/{response['id']}",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        )
+        response = poll.json()
+    if response.get("status") in {"failed", "cancelled"}:
+        raise RuntimeError(f"OpenAI response {response.get('status')}: {response.get('error')}")
+    return response
 
 
 def extract_output(response: dict) -> dict:
@@ -80,6 +97,8 @@ def extract_metadata(response: dict) -> dict:
         "output_tokens": usage.get("output_tokens", 0),
         "reasoning_tokens": output_details.get("reasoning_tokens", 0),
         "web_searches": web_searches,
+        "provider_status": response.get("status"),
+        "incomplete_details": response.get("incomplete_details"),
     }
 
 
@@ -101,7 +120,7 @@ async def main():
         async with sem:
             t0 = time.time()
             try:
-                async with httpx.AsyncClient(timeout=1800.0) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
                     response = await call_api(client, item, args.model, args.reasoning)
                 await runner.record(item, extract_output(response), time.time() - t0, extract_metadata(response))
             except Exception as e:

@@ -33,7 +33,7 @@ A benchmark for evaluating AI systems on verified people research.
 
 ```bash
 cd benchmarks/recon
-pip install httpx openai python-dotenv
+pip install anthropic httpx openai python-dotenv
 ```
 
 ### 2. Dataset
@@ -57,6 +57,7 @@ PARALLEL_API_KEY=your-key
 MOONSHOT_API_KEY=your-key
 DEEPSEEK_API_KEY=your-key
 ZAI_API_KEY=your-key
+ANTHROPIC_API_KEY=your-key
 ```
 
 Get a Sixtyfour API key at [app.sixtyfour.ai/keys](https://app.sixtyfour.ai/keys).
@@ -79,16 +80,20 @@ python scripts/gpt.py --model gpt-5.6-sol --reasoning high
 
 # Native provider web-research harnesses
 python scripts/kimi.py --reasoning max
-python scripts/deepseek.py --reasoning none
+python scripts/deepseek.py --model deepseek-flash --reasoning high
 python scripts/glm.py --reasoning max
+
+# Anthropic Claude
+python scripts/claude.py --model claude-sonnet-5 --effort xhigh
+python scripts/claude.py --model claude-haiku-4-5
 
 # Google Gemini
 python scripts/gemini.py                          # default: gemini-3.1-pro-preview, thinking=high
 python scripts/gemini.py --thinking medium
 
 # xAI Grok
-python scripts/grok.py --model 4.3               # Grok 4.3 (RECON config)
-python scripts/grok.py --model 4.1-fast
+python scripts/grok.py --model 4.6 --reasoning high
+python scripts/grok.py --model 4.20-ma
 
 # Exa
 python scripts/exa.py                            # default: agent, effort=xhigh
@@ -99,8 +104,24 @@ python scripts/parallel.py --processor ultra     # default
 python scripts/parallel.py --processor ultra8x   # supports --resume for crash recovery
 ```
 
-Kimi and GLM use bounded model-driven search loops; customize their budget with
-`--max-search-rounds N`. DeepSeek executes and bounds web search server-side.
+Each model runs in its provider's own harness with the provider's web search,
+page fetch, and code execution tools, and researches until it decides it is
+done:
+
+- GPT, Grok, and DeepSeek V4 Pro run their tool loops server-side. GPT uses
+  background mode and is polled, so long turns are never cut off.
+- Gemini researches with Google Search and URL context, then compiles its
+  answer in a second, tool-free turn, because it does not research when a
+  response schema is set. It is not given code execution: with it, Gemini
+  tries to fetch pages from the offline code sandbox instead of searching.
+- Claude resumes every `pause_turn` until it finishes, with each response
+  allowed the model's full output limit.
+- Kimi, GLM, and DeepSeek V4 Flash run client-side loops that end only when the
+  model stops calling search; a final strict-schema turn then compiles the
+  answer. Kimi and GLM use their providers' search APIs. DeepSeek V4 Flash
+  ignores DeepSeek's built-in search tool, so it gets an Exa-backed search
+  function instead. A failed search is returned to the model as a tool error.
+- Sixtyfour, Parallel, and Exa jobs are polled until the service finishes.
 
 ### 5. RECON configurations
 
@@ -113,9 +134,17 @@ Commands for configurations supported by these scripts:
 | Sixtyfour Scout | `sixtyfour.py` | `--tier scout` |
 | Sixtyfour High | `sixtyfour.py` | `--tier high` |
 | Sixtyfour xHigh | `sixtyfour.py` | `--tier xhigh` |
-| GPT-5.4 xhigh | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
+| GPT-5.6-sol xhigh | `gpt.py` | `--model gpt-5.6-sol --reasoning xhigh` |
 | Gemini 3.1 Pro | `gemini.py` | `--model gemini-3.1-pro-preview --thinking high` |
+| Grok 4.20 multi-agent | `grok.py` | `--model 4.20-ma` |
+| Grok 4.6 | `grok.py` | `--model 4.6 --reasoning high` |
 | Grok 4.3 | `grok.py` | `--model 4.3` |
+| Kimi K3 | `kimi.py` | `--model kimi-k3 --reasoning max` |
+| GLM 5.3 | `glm.py` | `--model glm-5.3 --reasoning max` |
+| DeepSeek V4 Flash | `deepseek.py` | `--model deepseek-flash --reasoning high` |
+| DeepSeek V4 Pro | `deepseek.py` | `--model deepseek-v4-pro --reasoning high` |
+| Claude Sonnet 5 | `claude.py` | `--model claude-sonnet-5 --effort xhigh` |
+| Claude Haiku 4.5 | `claude.py` | `--model claude-haiku-4-5` |
 | Exa agent xhigh | `exa.py` | `--mode agent --effort xhigh` |
 | Parallel Ultra | `parallel.py` | `--processor ultra` |
 | Parallel Ultra 2x | `parallel.py` | `--processor ultra2x` |

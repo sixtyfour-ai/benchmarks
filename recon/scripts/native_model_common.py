@@ -20,8 +20,10 @@ Search thoroughly, follow relevant primary sources, and distinguish same-name pe
 Return only facts supported by the evidence you found. If a field cannot be
 resolved confidently, return an empty string rather than guessing."""
 
-FINALIZE_PROMPT = """The web-search budget is exhausted. Using the evidence already
-collected, return the requested JSON object now. Do not call another tool."""
+# Sent only after the model has stopped calling tools on its own, because these
+# providers cannot combine tool use with a strict response schema in one turn.
+COMPILE_PROMPT = """Research is complete. Using the evidence collected above,
+return the requested JSON object now. Do not call another tool."""
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,6 @@ class ProviderConfig:
     key_env: str
     default_reasoning: str
     reasoning_choices: tuple[str, ...]
-    default_search_rounds: int | None = None
 
 
 ProviderCall = Callable[..., Awaitable[tuple[dict, dict]]]
@@ -136,6 +137,52 @@ def terminal_output(raw: Any) -> tuple[dict, bool]:
         return {}, False
 
 
+TURN_TIMEOUT_SECONDS = 3600.0
+SEARCH_FATAL_STATUS = {401, 403}
+SEARCH_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
+
+
+def provider_error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text.strip()[:300]
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("message") or error)[:300]
+    if isinstance(body, dict) and body.get("message"):
+        return str(body["message"])[:300]
+    return str(error or body)[:300]
+
+
+def search_failure(exc: Exception) -> tuple[str, str]:
+    """Describe a failed search call for the model, as a native harness would.
+
+    The model receives the failure as a tool result and decides what to do next.
+    Only authentication and permission failures stop the run.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in SEARCH_FATAL_STATUS:
+            raise exc
+        if status in SEARCH_TRANSIENT_STATUS:
+            return f"http_{status}", (
+                f"Search temporarily failed (HTTP {status}). "
+                "Try a shorter or differently phrased query."
+            )
+        detail = provider_error_detail(exc.response)
+        return f"http_{status}", (
+            f"The search service rejected this query (HTTP {status}"
+            f"{': ' + detail if detail else ''}). Try a different query."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout", "Search timed out. Try a shorter or differently phrased query."
+    return type(exc).__name__, "Search temporarily failed. Try a shorter or differently phrased query."
+
+
+SEARCH_ERRORS = (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException)
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -153,14 +200,6 @@ def parse_args(config: ProviderConfig) -> argparse.Namespace:
     )
     parser.add_argument("--people", type=positive_int, default=None)
     parser.add_argument("--concurrency", type=positive_int, default=10)
-    if config.default_search_rounds is not None:
-        parser.add_argument(
-            "--max-search-rounds",
-            type=positive_int,
-            default=config.default_search_rounds,
-        )
-    else:
-        parser.set_defaults(max_search_rounds=None)
     return parser.parse_args()
 
 
@@ -177,8 +216,6 @@ async def run_provider(config: ProviderConfig, call_provider: ProviderCall) -> N
         "reasoning": args.reasoning,
         "concurrency": args.concurrency,
     }
-    if args.max_search_rounds is not None:
-        run_config["max_search_rounds"] = args.max_search_rounds
 
     runner = EvalRunner(
         f"{config.name}_{args.model}_{args.reasoning}", run_config
@@ -205,7 +242,6 @@ async def run_provider(config: ProviderConfig, call_provider: ProviderCall) -> N
                     api_key=api_key,
                     model=args.model,
                     reasoning=args.reasoning,
-                    max_search_rounds=args.max_search_rounds,
                 )
                 await runner.record(
                     item,
@@ -216,6 +252,8 @@ async def run_provider(config: ProviderConfig, call_provider: ProviderCall) -> N
             except Exception as exc:
                 await runner.record_error(item, time.time() - started, exc)
 
-    async with httpx.AsyncClient(timeout=1800.0, limits=limits) as client:
+    # Each request is one model turn. The timeout catches a stalled connection,
+    # and a retry resumes the same turn.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(TURN_TIMEOUT_SECONDS, connect=30.0), limits=limits) as client:
         await asyncio.gather(*(process(client, item) for item in people))
     runner.summary()

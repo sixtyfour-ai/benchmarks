@@ -111,10 +111,19 @@ async def post_with_retry(client, url, *, max_retries: int = 6, **kwargs):
     Shared by the provider runners so each is robust out of the box. Retries on
     429/500/502/503/504 and on transport/timeout errors; raises on other 4xx.
     """
+    return await _request_with_retry(client, "POST", url, max_retries=max_retries, **kwargs)
+
+
+async def get_with_retry(client, url, *, max_retries: int = 6, **kwargs):
+    """GET with the same backoff as post_with_retry, for polling long-running jobs."""
+    return await _request_with_retry(client, "GET", url, max_retries=max_retries, **kwargs)
+
+
+async def _request_with_retry(client, method, url, *, max_retries: int, **kwargs):
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
-            resp = await client.post(url, **kwargs)
+            resp = await client.request(method, url, **kwargs)
         except (httpx.TransportError, httpx.TimeoutException) as e:
             last_exc = e
             await asyncio.sleep(min(2 ** attempt, 30))

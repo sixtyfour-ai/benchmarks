@@ -49,6 +49,33 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["compactions"], 1)
         self.assertEqual(calls[0]["context_management"], calls[1]["context_management"])
 
+    async def test_resumes_every_pause_until_claude_finishes(self):
+        pauses = 30
+        responses = [reply("pause_turn") for _ in range(pauses)] + [reply()]
+        with patch.object(claude, "stream_message", AsyncMock(side_effect=[(r, 0) for r in responses])):
+            output, metadata = await claude.call_api(None, ITEM, model="claude-sonnet-5", effort="xhigh")
+        self.assertEqual(output, {"employer": "Acme"})
+        self.assertEqual(metadata["continuations"], pauses)
+        self.assertEqual(metadata["terminal_status"], "structured_answer")
+
+    def test_tools_match_model_generation(self):
+        current = claude.tool_definitions("claude-sonnet-5")
+        self.assertEqual([tool["type"] for tool in current], ["web_search_20260209", "web_fetch_20260209"])
+        haiku = claude.tool_definitions("claude-haiku-4-5")
+        self.assertEqual([tool["type"] for tool in haiku], ["web_search_20250305", "web_fetch_20250910", "code_execution_20250825"])
+
+    async def test_haiku_thinking_budget_is_passed_through(self):
+        calls = []
+        async def stream(client, request, attempts):
+            calls.append(copy.deepcopy(request))
+            return reply(), 0
+        with patch.object(claude, "stream_message", stream):
+            await claude.call_api(None, ITEM, model="claude-haiku-4-5", thinking_budget=32000, max_tokens=64000)
+        self.assertEqual(calls[0]["thinking"], {"type": "enabled", "budget_tokens": 32000})
+        self.assertNotIn("output_config", calls[0])
+        self.assertIn("interleaved-thinking-2025-05-14", calls[0]["betas"])
+        self.assertIn("context-management-2025-06-27", calls[0]["betas"])
+
     async def test_continuation_limit_is_explicit_scored_blank(self):
         with patch.object(claude, "stream_message", AsyncMock(return_value=(reply("pause_turn"), 0))):
             output, metadata = await claude.call_api(None, ITEM, model="claude-opus-5", max_continuations=1)

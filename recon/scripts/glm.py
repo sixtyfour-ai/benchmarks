@@ -7,12 +7,14 @@ import httpx
 
 from judge import post_with_retry
 from native_model_common import (
-    FINALIZE_PROMPT,
+    COMPILE_PROMPT,
     SYSTEM_PROMPT,
+    SEARCH_ERRORS,
     ProviderConfig,
     authorization_headers,
     build_user_prompt,
     run_provider,
+    search_failure,
     terminal_output,
     usage_values,
 )
@@ -26,7 +28,6 @@ CONFIG = ProviderConfig(
     key_env="ZAI_API_KEY",
     default_reasoning="max",
     reasoning_choices=("low", "high", "max"),
-    default_search_rounds=10,
 )
 
 WEB_SEARCH_TOOL = {
@@ -59,7 +60,6 @@ async def call_glm(
     api_key: str,
     model: str,
     reasoning: str,
-    max_search_rounds: int,
 ) -> tuple[dict, dict]:
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -77,14 +77,18 @@ async def call_glm(
     }
     search_calls = 0
     search_results = 0
+    search_errors = 0
+    search_error_types: dict[str, int] = {}
+    search_error_examples: list[str] = []
     terminal_repair = False
 
-    for turn in range(max_search_rounds + 2):
-        can_search = turn < max_search_rounds and not terminal_repair
+    # Research continues until GLM stops calling search.
+    while True:
+        can_search = not terminal_repair
         request_messages = (
             messages
             if can_search
-            else [*messages, {"role": "user", "content": FINALIZE_PROMPT}]
+            else [*messages, {"role": "user", "content": COMPILE_PROMPT}]
         )
         request_payload = {
             "model": model,
@@ -135,19 +139,34 @@ async def call_glm(
                 if not query:
                     raise RuntimeError("GLM called web_search without a query")
 
-                search_response = await post_with_retry(
-                    client,
-                    SEARCH_ENDPOINT,
-                    json={
-                        "search_engine": "search-prime",
-                        "search_query": query,
-                        "count": 10,
-                        "search_recency_filter": "noLimit",
-                    },
-                    headers=headers,
-                )
-                results = search_response.json().get("search_result") or []
                 search_calls += 1
+                try:
+                    search_response = await post_with_retry(
+                        client,
+                        SEARCH_ENDPOINT,
+                        json={
+                            "search_engine": "search-prime",
+                            "search_query": query,
+                            "count": 10,
+                            "search_recency_filter": "noLimit",
+                        },
+                        headers=headers,
+                    )
+                except SEARCH_ERRORS as exc:
+                    error_type, error_message = search_failure(exc)
+                    search_errors += 1
+                    search_error_types[error_type] = search_error_types.get(error_type, 0) + 1
+                    if len(search_error_examples) < 5:
+                        search_error_examples.append(error_message)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": json.dumps({"error": error_message}),
+                        }
+                    )
+                    continue
+                results = search_response.json().get("search_result") or []
                 search_results += len(results)
                 messages.append(
                     {
@@ -171,12 +190,13 @@ async def call_glm(
             "reasoning": reasoning,
             "web_searches": search_calls,
             "search_results": search_results,
+            "search_errors": search_errors,
+            "search_error_types": search_error_types,
+            "search_error_examples": search_error_examples,
             "provider_status": choice.get("finish_reason"),
             "terminal_format_valid": terminal_format_valid,
             "terminal_repaired": terminal_repair,
         }
-
-    raise RuntimeError("GLM did not produce a terminal response")
 
 
 if __name__ == "__main__":

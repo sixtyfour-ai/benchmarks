@@ -86,8 +86,8 @@ async def call_agent(client: httpx.AsyncClient, item: dict, effort: str) -> dict
         break
     if not run_id:
         raise RuntimeError("exa agent submit failed after retries")
-    deadline = time.time() + 3600
-    while time.time() < deadline:
+    # Poll until Exa reports a terminal status.
+    while True:
         await asyncio.sleep(12)
         try:
             s = await client.get(f"{BASE}/agent/runs/{run_id}", headers=headers)
@@ -109,7 +109,6 @@ async def call_agent(client: httpx.AsyncClient, item: dict, effort: str) -> dict
                     out = {}
             cost = data.get("costDollars", {})
             return {"output": out, "cost": cost.get("total", 0) if isinstance(cost, dict) else (cost or 0)}
-    raise TimeoutError("exa agent did not complete")
 
 
 async def main():

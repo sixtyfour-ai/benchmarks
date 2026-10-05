@@ -47,7 +47,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(provider, "post_with_retry", fake_post):
                     output, metadata = await getattr(provider, f"call_{provider.CONFIG.name}")(
                         object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
-                        reasoning="max", max_search_rounds=10,
+                        reasoning="max",
                     )
                 self.assertEqual(output["employer"], "Acme")
                 self.assertEqual(metadata["terminal_repaired"], provider is glm)
@@ -68,29 +68,32 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(RuntimeError, "no JSON object"):
                         await getattr(provider, f"call_{provider.CONFIG.name}")(
                             object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
-                            reasoning="max", max_search_rounds=10,
+                            reasoning="max",
                         )
                 self.assertEqual(fake_post.await_count, 3 if provider is kimi else 2)
 
     async def test_chat_runners_bound_unexpected_terminal_tool_calls(self):
         for provider in (kimi, glm):
             with self.subTest(provider=provider.CONFIG.name):
+                prose = {"role": "assistant", "content": "Ada works at Acme."}
                 unexpected = {"role": "assistant", "content": None, "tool_calls": [{
                     "id": "terminal_call", "type": "function", "function": {
                         "name": "unexpected", "arguments": "{}"
                     }
                 }]}
-                # Exercise only compilation: no provider tools may be dispatched.
-                response = FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": unexpected}]})
-                fake_post = AsyncMock(return_value=response)
+                # Research ends in prose; compilation then requests a tool, which
+                # must never be dispatched.
+                research_end = FakeResponse({"choices": [{"finish_reason": "stop", "message": prose}]})
+                tool_call = FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": unexpected}]})
+                fake_post = AsyncMock(side_effect=[research_end, tool_call, tool_call])
                 with patch.object(provider, "post_with_retry", fake_post):
                     with self.assertRaisesRegex(RuntimeError, "tool during terminal"):
                         await getattr(provider, f"call_{provider.CONFIG.name}")(
                             object(), ITEM, api_key="secret", model=provider.CONFIG.default_model,
-                            reasoning="max", max_search_rounds=0,
+                            reasoning="max",
                         )
-                self.assertEqual(fake_post.await_count, 2)
-                for call in fake_post.await_args_list:
+                self.assertEqual(fake_post.await_count, 3 if provider is kimi else 2)
+                for call in fake_post.await_args_list[1:]:
                     body = call.kwargs["json"]
                     self.assertEqual(body["tool_choice"], "none")
                     self.assertNotIn("tools", body)
@@ -104,15 +107,32 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             ):
                 common.positive_int(value)
 
-    def test_search_round_limit_is_available_on_client_search_runners(self):
-        self.assertEqual(kimi.CONFIG.default_search_rounds, 10)
-        self.assertEqual(glm.CONFIG.default_search_rounds, 10)
-        self.assertEqual(deepseek.CONFIG.default_search_rounds, 10)
-
-        with patch.object(sys, "argv", ["kimi.py", "--max-search-rounds", "4"]):
-            self.assertEqual(common.parse_args(kimi.CONFIG).max_search_rounds, 4)
-        with patch.object(sys, "argv", ["deepseek.py", "--max-search-rounds", "4"]):
-            self.assertEqual(common.parse_args(deepseek.CONFIG).max_search_rounds, 4)
+    async def test_kimi_keeps_searching_until_the_model_stops(self):
+        searches = 25
+        def search_call(index):
+            return FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [{
+                    "id": f"call_{index}", "type": "function", "function": {
+                        "name": "web_search", "arguments": json.dumps({"query": f"Ada {index}"}),
+                    }
+                }]
+            }}]})
+        final = {"role": "assistant", "content": '{"employer":"Acme","hometown":""}'}
+        responses = []
+        for index in range(searches):
+            responses += [search_call(index), FakeResponse({"search_results": []})]
+        responses += [FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]})] * 2
+        fake_post = AsyncMock(side_effect=responses)
+        with patch.object(kimi, "post_with_retry", fake_post):
+            output, metadata = await kimi.call_kimi(
+                object(), ITEM, api_key="secret", model="kimi-k3", reasoning="max",
+            )
+        self.assertEqual(output["employer"], "Acme")
+        self.assertEqual(metadata["web_searches"], searches)
+        chat_requests = [call.kwargs["json"] for call in fake_post.await_args_list
+                         if call.args[1] == kimi.ENDPOINT]
+        self.assertTrue(all("tools" in request for request in chat_requests[:-1]))
+        self.assertEqual(chat_requests[-1]["tool_choice"], "none")
 
     def test_extracts_embedded_json_without_interpreting_prose(self):
         parsed = common.json_content(
@@ -157,6 +177,18 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             FakeResponse(
                 {
                     "model": "kimi-k3",
+                    "usage": {"prompt_tokens": 15, "completion_tokens": 4},
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "Ada works at Acme."},
+                        }
+                    ],
+                }
+            ),
+            FakeResponse(
+                {
+                    "model": "kimi-k3",
                     "usage": {"prompt_tokens": 20, "completion_tokens": 8},
                     "choices": [
                         {
@@ -183,13 +215,12 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 api_key="secret",
                 model="kimi-k3",
                 reasoning="max",
-                max_search_rounds=1,
             )
 
         self.assertEqual(output, {"employer": "Acme", "hometown": ""})
         self.assertEqual(metadata["web_searches"], 1)
         self.assertTrue(metadata["terminal_format_valid"])
-        self.assertEqual(metadata["input_tokens"], 30)
+        self.assertEqual(metadata["input_tokens"], 45)
         self.assertEqual(requests[1]["json"], {"text_query": "Ada Example Acme", "limit": 10, "timeout_seconds": 30})
         self.assertEqual(requests[1]["max_retries"], kimi.SEARCH_MAX_RETRIES)
         self.assertEqual(metadata["search_backend"], "moonshot/search_pro")
@@ -204,18 +235,18 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("response_format", requests[0]["json"])
         self.assertEqual(requests[0]["json"]["tools"], [kimi.WEB_SEARCH_TOOL])
         self.assertEqual(requests[0]["json"]["tool_choice"], "required")
-        self.assertEqual(requests[2]["json"]["tool_choice"], "none")
+        self.assertEqual(requests[2]["json"]["tool_choice"], "auto")
+        self.assertEqual(requests[2]["json"]["tools"], [kimi.WEB_SEARCH_TOOL])
+        self.assertEqual(requests[3]["json"]["tool_choice"], "none")
         self.assertEqual(metadata["search_policy"], "first_turn_required_then_auto")
-        response_format = requests[2]["json"]["response_format"]
+        response_format = requests[3]["json"]["response_format"]
         self.assertTrue(response_format["json_schema"]["strict"])
         self.assertEqual(
             response_format["json_schema"]["schema"]["required"],
             ["employer", "hometown"],
         )
-        self.assertNotIn("tools", requests[2]["json"])
-        self.assertIn(
-            "budget is exhausted", requests[2]["json"]["messages"][-1]["content"]
-        )
+        self.assertNotIn("tools", requests[3]["json"])
+        self.assertEqual(requests[3]["json"]["messages"][-1]["content"], common.COMPILE_PROMPT)
 
     async def test_deepseek_pro_uses_server_side_search_and_requested_reasoning(self):
         response = FakeResponse(
@@ -249,7 +280,6 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 api_key="secret",
                 model="deepseek-v4-pro",
                 reasoning="high",
-                max_search_rounds=10,
             )
 
         self.assertEqual(output["hometown"], "London")
@@ -268,7 +298,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             "name": "web_search",
             "arguments": '{"query":"Ada Example Acme"}',
         }
-        over_budget_call = {
+        second_call = {
             "type": "function_call",
             "call_id": "call_2",
             "name": "web_search",
@@ -282,7 +312,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 "output": [
                     {"type": "reasoning", "id": "r1", "summary": []},
                     function_call,
-                    over_budget_call,
+                    second_call,
                 ],
             }),
             FakeResponse({"results": [{
@@ -290,6 +320,13 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 "url": "https://example.test/ada",
                 "text": "Ada works at Acme.",
             }]}),
+            FakeResponse({"results": []}),
+            FakeResponse({
+                "status": "completed",
+                "model": "deepseek-flash",
+                "usage": {"input_tokens": 15, "output_tokens": 4},
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Done."}]}],
+            }),
             FakeResponse({
                 "status": "completed",
                 "model": "deepseek-flash",
@@ -304,7 +341,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         ):
             output, metadata = await deepseek.call_deepseek(
                 object(), ITEM, api_key="secret", model="deepseek-v4-flash",
-                reasoning="high", max_search_rounds=1,
+                reasoning="high",
             )
 
         self.assertEqual(output, {"employer": "Acme", "hometown": ""})
@@ -319,18 +356,18 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
             fake_post.await_args_list[1].kwargs["json"]["contents"],
             {"text": {"maxCharacters": deepseek.EXA_TEXT_CHARACTERS}},
         )
-        terminal = fake_post.await_args_list[2].kwargs["json"]
+        self.assertEqual(fake_post.await_args_list[2].kwargs["json"]["query"], "Ada Example hometown")
+        research = fake_post.await_args_list[3].kwargs["json"]
+        self.assertEqual(research["tools"], [deepseek.WEB_SEARCH_FUNCTION])
+        terminal = fake_post.await_args_list[4].kwargs["json"]
         self.assertEqual(terminal["tool_choice"], "none")
         self.assertNotIn("tools", terminal)
-        tool_output = next(item for item in terminal["input"] if item.get("type") == "function_call_output")
-        self.assertEqual(json.loads(tool_output["output"])[0]["url"], "https://example.test/ada")
-        budget_output = next(
-            item for item in terminal["input"]
-            if item.get("type") == "function_call_output" and item.get("call_id") == "call_2"
-        )
-        self.assertIn("budget exhausted", json.loads(budget_output["output"])["error"].lower())
+        self.assertEqual(terminal["input"][-1]["content"], common.COMPILE_PROMPT)
+        tool_outputs = [item for item in terminal["input"] if item.get("type") == "function_call_output"]
+        self.assertEqual([item["call_id"] for item in tool_outputs], ["call_1", "call_2"])
+        self.assertEqual(json.loads(tool_outputs[0]["output"])[0]["url"], "https://example.test/ada")
         self.assertEqual(metadata["search_backend"], "exa/search")
-        self.assertEqual(metadata["web_searches"], 1)
+        self.assertEqual(metadata["web_searches"], 2)
         self.assertEqual(metadata["search_results"], 1)
         self.assertEqual(metadata["search_policy"], "auto_in_thinking_mode")
 
@@ -352,7 +389,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(kimi, "post_with_retry", fake_post):
                     with self.assertRaises(RuntimeError):
                         await kimi.call_kimi(object(), ITEM, api_key="secret", model="kimi-k3",
-                                             reasoning="max", max_search_rounds=10)
+                                             reasoning="max")
                 self.assertEqual(fake_post.await_count, expected_calls)
 
     async def test_kimi_requires_only_first_research_turn(self):
@@ -370,7 +407,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         ])
         with patch.object(kimi, "post_with_retry", fake_post):
             await kimi.call_kimi(object(), ITEM, api_key="secret", model="kimi-k3",
-                                 reasoning="max", max_search_rounds=10)
+                                 reasoning="max")
         chat_requests = [call.kwargs["json"] for call in fake_post.await_args_list
                          if call.args[1] == kimi.ENDPOINT]
         self.assertEqual([request["tool_choice"] for request in chat_requests],
@@ -403,7 +440,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(kimi, "post_with_retry", fake_post):
             output, metadata = await kimi.call_kimi(
                 object(), ITEM, api_key="secret", model="kimi-k3",
-                reasoning="max", max_search_rounds=3,
+                reasoning="max",
             )
 
         self.assertEqual(output["employer"], "Acme")
@@ -418,6 +455,39 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(error_result["tool_call_id"], "call_1")
         self.assertIn("temporarily failed", error_result["content"])
+
+    async def test_glm_returns_rejected_search_to_the_model_and_stops_on_auth_failure(self):
+        call = {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function", "function": {
+                "name": "web_search", "arguments": '{"query":"Ada Example"}'
+            }
+        }]}
+        final = {"role": "assistant", "content": '{"employer":"Acme","hometown":""}'}
+        request = httpx.Request("POST", glm.SEARCH_ENDPOINT)
+        rejected = httpx.Response(400, request=request, json={"error": {"code": "1301", "message": "query rejected"}})
+        fake_post = AsyncMock(side_effect=[
+            FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": call}]}),
+            httpx.HTTPStatusError("bad request", request=request, response=rejected),
+            FakeResponse({"choices": [{"finish_reason": "stop", "message": final}]}),
+        ])
+        with patch.object(glm, "post_with_retry", fake_post):
+            output, metadata = await glm.call_glm(object(), ITEM, api_key="secret", model="glm-5.3", reasoning="max")
+        self.assertEqual(output["employer"], "Acme")
+        self.assertEqual(metadata["search_errors"], 1)
+        self.assertEqual(metadata["search_error_types"], {"http_400": 1})
+        self.assertIn("query rejected", metadata["search_error_examples"][0])
+        tool_result = fake_post.await_args_list[2].kwargs["json"]["messages"][3]
+        self.assertEqual(tool_result["tool_call_id"], "call_1")
+        self.assertIn("query rejected", json.loads(tool_result["content"])["error"])
+
+        unauthorized = httpx.Response(401, request=request)
+        fake_post = AsyncMock(side_effect=[
+            FakeResponse({"choices": [{"finish_reason": "tool_calls", "message": call}]}),
+            httpx.HTTPStatusError("unauthorized", request=request, response=unauthorized),
+        ])
+        with patch.object(glm, "post_with_retry", fake_post):
+            with self.assertRaises(httpx.HTTPStatusError):
+                await glm.call_glm(object(), ITEM, api_key="secret", model="glm-5.3", reasoning="max")
 
     async def test_deepseek_repairs_prose_with_tool_free_compilation(self):
         research_output = [
@@ -465,7 +535,6 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 api_key="secret",
                 model="deepseek-v4-pro",
                 reasoning="high",
-                max_search_rounds=10,
             )
 
         self.assertEqual(output, {"employer": "Acme", "hometown": ""})
@@ -476,7 +545,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         repair = requests[1]["json"]
         self.assertNotIn("tools", repair)
         self.assertIn(research_output[0], repair["input"])
-        self.assertEqual(repair["input"][-1]["content"], common.FINALIZE_PROMPT)
+        self.assertEqual(repair["input"][-1]["content"], common.COMPILE_PROMPT)
 
     async def test_deepseek_compiles_completed_research_without_final_text(self):
         research_items = [
@@ -495,7 +564,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(deepseek, "post_with_retry", fake_post):
                     call = deepseek.call_deepseek(
                         object(), ITEM, api_key="secret", model="deepseek-v4-pro",
-                        reasoning="high", max_search_rounds=10,
+                        reasoning="high",
                     )
                     if terminal:
                         output, metadata = await call
@@ -511,7 +580,7 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 repair = fake_post.await_args_list[1].kwargs["json"]
                 self.assertNotIn("tools", repair)
                 self.assertEqual(repair["input"][1:-1], research_items)
-                self.assertEqual(repair["input"][-1]["content"], common.FINALIZE_PROMPT)
+                self.assertEqual(repair["input"][-1]["content"], common.COMPILE_PROMPT)
 
     async def test_glm_uses_zai_search_and_thinking_toggle(self):
         assistant = {
@@ -578,7 +647,6 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
                 api_key="secret",
                 model="glm-5.3",
                 reasoning="max",
-                max_search_rounds=1,
             )
 
         self.assertEqual(output["employer"], "Acme")
@@ -599,10 +667,10 @@ class NativeModelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(continuation["messages"][2], assistant)
         self.assertEqual(continuation["messages"][3]["tool_call_id"], "call_1")
-        self.assertNotIn("tools", continuation)
-        self.assertIn(
-            "budget is exhausted", continuation["messages"][-1]["content"]
-        )
+        self.assertEqual(continuation["tools"], [glm.WEB_SEARCH_TOOL])
+        self.assertEqual(continuation["tool_choice"], "auto")
+        self.assertEqual(len(continuation["messages"]), 4)
+        self.assertFalse(metadata["terminal_repaired"])
 
 
 if __name__ == "__main__":

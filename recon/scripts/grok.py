@@ -22,6 +22,7 @@ XAI_API_KEY = os.environ["XAI_API_KEY"]
 XAI_ENDPOINT = "https://api.x.ai/v1/responses"
 
 MODELS = {
+    "4.6": "grok-4.6",
     "4.3": "grok-4.3",
     "4.20": "grok-4.20-0309-reasoning",
     "4.20-ma": "grok-4.20-multi-agent-0309",
@@ -39,12 +40,12 @@ def build_schema(fields: list[dict]) -> dict:
     }
 
 
-async def call_api(client: httpx.AsyncClient, item: dict, model: str) -> dict:
+async def call_api(client: httpx.AsyncClient, item: dict, model: str, reasoning: str) -> dict:
     fields_desc = "\n".join(f"- {f['fieldname']}: {f['description']}" for f in item["fields"])
     person_key = (item.get("name") or item["person_info"]).replace(" ", "_").lower()
     payload = {
         "model": model,
-        "reasoning_effort": "high",
+        "reasoning_effort": reasoning,
         "input": (
             f"You are a research agent. Given a description of a person, find specific facts about them.\n\n"
             f"Person: {item['person_info']}\n\n"
@@ -101,7 +102,8 @@ def extract_metadata(response: dict) -> dict:
 
 async def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", choices=list(MODELS), default="4.3")
+    p.add_argument("--model", choices=list(MODELS), default="4.6")
+    p.add_argument("--reasoning", choices=["low", "medium", "high"], default="high")
     p.add_argument("--people", type=int, default=None)
     p.add_argument("--concurrency", type=int, default=5)
     args = p.parse_args()
@@ -117,8 +119,11 @@ async def main():
         async with sem:
             t0 = time.time()
             try:
-                async with httpx.AsyncClient(timeout=1800.0) as client:
-                    response = await call_api(client, item, model_id)
+                # xAI runs the whole tool loop server-side in this one request. The
+                # timeout only catches a stalled connection; xAI ends its own loops
+                # long before it.
+                async with httpx.AsyncClient(timeout=httpx.Timeout(7200.0, connect=30.0)) as client:
+                    response = await call_api(client, item, model_id, args.reasoning)
                 await runner.record(item, extract_output(response), time.time() - t0, extract_metadata(response))
             except Exception as e:
                 await runner.record_error(item, time.time() - t0, e)

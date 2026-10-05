@@ -88,9 +88,9 @@ def _parse_lead_info(person_info: str) -> dict:
     return info
 
 
-async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 14400) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+async def poll_result(client: httpx.AsyncClient, task_id: str) -> dict:
+    # Poll until the job reports a terminal status.
+    while True:
         await asyncio.sleep(10)
         try:
             resp = await client.get(
@@ -108,7 +108,6 @@ async def poll_result(client: httpx.AsyncClient, task_id: str, timeout: float = 
             return data.get("result", {})
         if status in ("failed", "cancelled"):
             raise RuntimeError(f"Job {status}: {data.get('error', task_id)}")
-    raise TimeoutError(f"Job {task_id} did not complete within {timeout}s")
 
 
 def extract_output(result: dict) -> dict:

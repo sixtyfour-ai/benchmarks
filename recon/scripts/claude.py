@@ -1,7 +1,11 @@
 """RECON through Anthropic's native search and code-execution tools.
 
 Requires anthropic, httpx and openai; ANTHROPIC_API_KEY and OPENAI_API_KEY.
-Example: python scripts/claude.py --model claude-opus-5 --effort xhigh
+Example: python scripts/claude.py --model claude-sonnet-5 --effort xhigh
+
+The runner resumes every ``pause_turn`` until Claude finishes, and each response
+may use the model's full output limit. Server-side fallbacks are not enabled, so
+every answer comes from the model named on the command line.
 """
 
 import argparse
@@ -30,11 +34,20 @@ class TerminalFormatError(ValueError):
     """Completed model response that does not supply the requested answer JSON."""
 
 
+# Models with adaptive thinking, server-side compaction and the dynamic-filtering
+# web tools. Others (Haiku 4.5) use the basic tool versions and context editing.
+CURRENT_MODELS = {
+    "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6",
+}
+
+
 def context_options(model, enabled=True):
     """Use provider-managed context; never rewrite local history or prompts."""
     if not enabled:
         return {}
-    if model in {"claude-opus-5", "claude-sonnet-5", "claude-opus-4-6", "claude-sonnet-4-6"}:
+    if model in CURRENT_MODELS:
         return {
             "betas": ["compact-2026-01-12"],
             "context_management": {"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 150000}}]},
@@ -51,8 +64,15 @@ def token_usage(responses, key):
     return sum(sum(part.get(key, 0) for part in (r.get("usage", {}).get("iterations") or [r.get("usage", {})])) for r in responses)
 
 
-def tool_definitions():
-    # These versions support Haiku 4.5 as well as the larger models.
+def tool_definitions(model):
+    """Native research tools for the model."""
+    if model in CURRENT_MODELS:
+        # These versions run code execution internally to filter results, so a
+        # separate code_execution tool would add a second sandbox.
+        return [
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260209", "name": "web_fetch"},
+        ]
     return [
         {"type": "web_search_20250305", "name": "web_search"},
         {"type": "web_fetch_20250910", "name": "web_fetch"},
@@ -116,22 +136,28 @@ def result_metadata(responses, *, continuations, retries, terminal_status,
 
 
 async def call_api(client, item, *, model, effort=None, max_tokens=64000,
-                   max_continuations=12, attempts=4, context_management=True):
+                   max_continuations=None, attempts=4, context_management=True,
+                   thinking_budget=None):
     if "haiku" in model and effort is not None:
         raise ValueError("Haiku does not support the effort parameter; omit --effort")
     request = {
         "model": model, "max_tokens": max_tokens,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": build_user_prompt(item)}],
-        "tools": tool_definitions(),
+        "tools": tool_definitions(model),
         **context_options(model, context_management),
     }
     if effort is not None:
         request["output_config"] = {"effort": effort}
         request["thinking"] = {"type": "adaptive"}
+    elif thinking_budget is not None:
+        request["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+        # Without this beta, budgeted thinking happens only before the first tool call.
+        request["betas"] = [*request.get("betas", []), "interleaved-thinking-2025-05-14"]
     responses = []
     retries = 0
-    for continuation in range(max_continuations + 1):
+    continuation = 0
+    while True:
         try:
             response, retried = await stream_message(client, request, attempts)
         except Exception as error:
@@ -153,7 +179,7 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                 api_refusal=api_refusal, terminal_format_valid=format_valid,
                 terminal_status="api_refusal" if api_refusal else ("structured_answer" if format_valid else "unstructured_nonanswer"),
             )
-        if continuation == max_continuations:
+        if max_continuations is not None and continuation == max_continuations:
             output = {field["fieldname"]: "" for field in item["fields"]}
             return output, result_metadata(
                 responses, continuations=continuation, retries=retries,
@@ -161,38 +187,52 @@ async def call_api(client, item, *, model, effort=None, max_tokens=64000,
                 terminal_format_valid=False,
                 continuation_budget_exhausted=True,
             )
+        # pause_turn: the server paused its own tool loop. Resend the turn
+        # unchanged and it resumes; no extra user message is added.
         request["messages"].append({"role": "assistant", "content": response["content"]})
         container_id = response.get("container", {}).get("id")
         if container_id:
             request["container"] = container_id
-    raise AssertionError("unreachable")
+        continuation += 1
 
 
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument("--model", default="claude-sonnet-5")
     parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
+    parser.add_argument("--thinking-budget", type=positive_int,
+                        help="extended thinking budget for models without adaptive thinking (Haiku 4.5)")
     parser.add_argument("--people", type=positive_int)
     parser.add_argument("--concurrency", type=positive_int, default=10)
-    parser.add_argument("--max-tokens", type=positive_int, default=64000)
-    parser.add_argument("--max-continuations", type=positive_int, default=12)
+    parser.add_argument("--max-tokens", type=positive_int,
+                        help="per-response output limit; defaults to the model's maximum")
+    parser.add_argument("--max-continuations", type=positive_int,
+                        help="optional cap on pause_turn resumptions; unlimited by default")
     parser.add_argument("--attempts", type=positive_int, default=4)
-    parser.add_argument("--timeout", type=positive_int, default=3600)
+    parser.add_argument("--timeout", type=positive_int,
+                        help="optional per-person wall-clock limit in seconds; none by default")
     parser.add_argument("--context-management", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if "haiku" in args.model and args.effort:
         parser.error("Haiku does not support --effort")
+    if args.model in CURRENT_MODELS and args.thinking_budget:
+        parser.error(f"{args.model} uses adaptive thinking; set --effort instead of --thinking-budget")
     people = load_people(args.people)
-    config = {**vars(args), "context_options": context_options(args.model, args.context_management), "tools": tool_definitions(), "anthropic_sdk": anthropic.__version__}
-    runner = EvalRunner(f"claude_{args.model}_{args.effort or 'default'}", config)
     semaphore = asyncio.Semaphore(args.concurrency)
     async with anthropic.AsyncAnthropic(max_retries=0, timeout=httpx.Timeout(300, connect=30)) as client:
+        if args.max_tokens is None:
+            args.max_tokens = (await client.models.retrieve(args.model)).max_tokens
+        if args.thinking_budget is not None and args.thinking_budget >= args.max_tokens:
+            parser.error("--thinking-budget must be below the model's output limit")
+        config = {**vars(args), "context_options": context_options(args.model, args.context_management), "tools": tool_definitions(args.model), "anthropic_sdk": anthropic.__version__}
+        runner = EvalRunner(f"claude_{args.model}_{args.effort or 'default'}", config)
+
         async def process(item):
             async with semaphore:
                 started = time.monotonic()
                 try:
                     async with asyncio.timeout(args.timeout):
-                        output, metadata = await call_api(client, item, model=args.model, effort=args.effort, max_tokens=args.max_tokens, max_continuations=args.max_continuations, attempts=args.attempts, context_management=args.context_management)
+                        output, metadata = await call_api(client, item, model=args.model, effort=args.effort, max_tokens=args.max_tokens, max_continuations=args.max_continuations, attempts=args.attempts, context_management=args.context_management, thinking_budget=args.thinking_budget)
                     await runner.record(item, output, time.monotonic() - started, metadata)
                 except Exception as error:
                     metadata = {"responses": error.responses} if isinstance(error, ClaudeRunError) else None
