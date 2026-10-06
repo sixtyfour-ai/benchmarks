@@ -44,6 +44,7 @@ class ClaudeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1]["container"], "container_123")
         self.assertEqual(calls[1]["messages"][-1]["content"], pause["content"])
         self.assertEqual(calls[0]["tools"], calls[1]["tools"])
+        self.assertEqual(calls[1]["cache_control"], {"type": "ephemeral"})
         self.assertNotIn("SECRET_REFERENCE", json.dumps(calls))
         self.assertEqual(meta["continuations"], 1)
         self.assertEqual(meta["compactions"], 1)
