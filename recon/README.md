@@ -6,7 +6,7 @@ A benchmark for evaluating AI systems on verified people research.
 
 ## Results
 
-| Provider | Configuration | Accuracy | Weighted Accuracy | Precision | Correct / Wrong / Missing |
+| Provider | Configuration | Accuracy | Net Accuracy | Precision | Correct / Wrong / Missing |
 |----------|--------------|----------|-------------------|-----------|-------------|
 | Sixtyfour | XHigh | 84.4% | +70.6% | 85.9% | 434 / 71 / 9 |
 | Sixtyfour | High | 67.7% | +54.3% | 83.5% | 348 / 69 / 97 |
@@ -29,7 +29,7 @@ A benchmark for evaluating AI systems on verified people research.
 | Z.AI | GLM 5.3 (max) | 13.8% | +3.7% | 57.7% | 71 / 52 / 391 |
 | Anthropic | Claude Haiku 4.5 | 7.6% | +1.6% | 55.7% | 39 / 31 / 444 |
 
-**Weighted accuracy** = (correct − wrong) / total_fields. Penalizes incorrect answers.
+**Net accuracy** = (correct − wrong) / total_fields. Penalizes incorrect answers.
 
 [Full results](results/sixtyfour_benchmark_results.json).
 
@@ -196,5 +196,5 @@ The judge has 98.5% agreement with human evaluators on a 200-field sample.
 ## Scoring
 
 - **Accuracy** = correct / total_fields
-- **Weighted Accuracy** = (correct − wrong) / total_fields
+- **Net Accuracy** = (correct − wrong) / total_fields
 - **Precision** = correct / (correct + wrong)
